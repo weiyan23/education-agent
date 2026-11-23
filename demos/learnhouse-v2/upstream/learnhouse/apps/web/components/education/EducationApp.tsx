@@ -1144,7 +1144,18 @@ function Generator({
       (d.knowledge_points || []).map((x: D) => x.id)
     ),
     [busy, setBusy] = useState(false),
-    [error, setError] = useState('')
+    [error, setError] = useState(''),
+    [generationMode, setGenerationMode] = useState('rule_template'),
+    [targetStudent, setTargetStudent] = useState('')
+  const fixtureMode = generationMode === 'fixture'
+  const eligibleTargets = (d.knowledge_points || []).filter(
+    (point: D) => point.code === 'java.condition'
+  )
+  const students = Array.from(new Map<number, D>(
+    (d.classes || []).flatMap((group: D) =>
+      (group.members || []).map((member: D): [number, D] => [member.user_id, member])
+    )
+  ).values())
   async function generate(e: React.FormEvent) {
     e.preventDefault()
     setBusy(true)
@@ -1154,7 +1165,9 @@ function Generator({
         method: 'POST',
         etag: d.etag,
         body: {
-          mode: 'rule_template',
+          ...(fixtureMode
+            ? { mode: 'research_generator', run_mode: 'fixture', target_student_id: Number(targetStudent), max_calls: 4 }
+            : { mode: 'rule_template' }),
           source_version_id: source,
           policy_version_id: d.policy_version_id,
           knowledge_point_ids: selected,
@@ -1163,7 +1176,7 @@ function Generator({
           max_attempts: 1,
         },
       })
-      notify('规则练习已生成，请检查后发布')
+      notify(fixtureMode ? '合成候选已生成，请审核后发布' : '规则练习已生成，请检查后发布')
       if (task.result_refs?.resource_id)
         router.push(
           pathFor('teacher', `/resources/${task.result_refs.resource_id}`)
@@ -1181,8 +1194,31 @@ function Generator({
         <form className="edu-form" onSubmit={generate}>
           <h2>准备一份练习</h2>
           <p className="edu-muted">
-            选择课程资料与目标知识点，生成可检查的规则练习。
+            选择课程资料与目标知识点，生成待检查的练习。
           </p>
+          {d.capabilities?.some((capability: D) => capability.key === 'generation_fixture') && (
+            <Field label="生成方式">
+              <select className={INPUT} value={generationMode} onChange={(e) => {
+                const mode = e.target.value
+                setGenerationMode(mode)
+                setSelected(mode === 'fixture' ? eligibleTargets.slice(0, 1).map((point: D) => point.id) :
+                  (d.knowledge_points || []).map((point: D) => point.id))
+              }}>
+                <option value="rule_template">规则模板</option>
+                <option value="fixture">研究生成联调（合成样例）</option>
+              </select>
+            </Field>
+          )}
+          {fixtureMode && (
+            <Field label="联调学生">
+              <select className={INPUT} value={targetStudent} onChange={(e) => setTargetStudent(e.target.value)} required>
+                <option value="">请选择联调学生</option>
+                {students.map((student) => (
+                  <option key={student.user_id} value={student.user_id}>{student.display_name}</option>
+                ))}
+              </select>
+            </Field>
+          )}
           <Field label="来源资料">
             <select
               className={INPUT}
@@ -1201,7 +1237,7 @@ function Generator({
           <fieldset>
             <legend className="edu-small font-semibold mb-2">目标知识点</legend>
             <div className="edu-stack">
-              {d.knowledge_points?.map((k: D) => (
+              {(fixtureMode ? eligibleTargets : d.knowledge_points)?.map((k: D) => (
                 <label key={k.id} className="edu-inline">
                   <input
                     type="checkbox"
@@ -1235,9 +1271,9 @@ function Generator({
               variant="primary"
               type="submit"
               loading={busy}
-              disabled={!source || !selected.length}
+              disabled={!source || !selected.length || (fixtureMode && (!targetStudent || selected.length !== 1))}
             >
-              生成规则练习
+              {fixtureMode ? '生成合成候选' : '生成规则练习'}
             </Button>
           </div>
         </form>
@@ -1563,6 +1599,21 @@ function Resource({
                 {role === 'teacher' && d.restricted_content && (
                   <Panel padded>
                     <h3>教师参考答案</h3>
+                    {d.version.provenance === 'simulated' && (
+                      <>
+                        <p>合成样例 · 第 {d.version.version} 版</p>
+                        <pre className="edu-content whitespace-pre-wrap">{d.restricted_content.grading_notes}</pre>
+                        {d.candidate_history?.map((version: D) => (
+                          <details key={version.version}>
+                            <summary>第 {version.version} 版候选</summary>
+                            {version.content.questions.map((question: D) => (
+                              <pre key={question.item_id} className="edu-content whitespace-pre-wrap">{question.prompt}</pre>
+                            ))}
+                            <pre className="edu-content whitespace-pre-wrap">{version.grading_notes}</pre>
+                          </details>
+                        ))}
+                      </>
+                    )}
                     <div className="edu-stack mt-3">
                       {(
                         d.restricted_content.answer_keys ||

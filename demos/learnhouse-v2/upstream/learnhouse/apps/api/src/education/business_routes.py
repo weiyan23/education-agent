@@ -1,6 +1,10 @@
 """HTTP adapter for the real PostgreSQL-backed education demo."""
 from __future__ import annotations
+import asyncio
 import json
+import os
+from pathlib import Path
+import sys
 from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import UUID, uuid4
@@ -220,7 +224,9 @@ async def generate(course_id:int,request:Request,actor=Depends(require_actor),db
     if data['budget_limit']>rules['maximum_task_budget']:fail('POLICY_BUDGET_EXCEEDED',422)
     if data['mode']=='research_generator':
         await require_course(db,actor,course_id,action='content.generate',student_id=data['target_student_id'])
-        fail('RESEARCH_NOT_CONNECTED',503,'研究执行尚未接线；本版可使用明确标记的规则模板')
+        if data.get('run_mode') != 'fixture' or os.getenv('EA_GENERATION_FIXTURE_COURSE_ID') != str(course_id):
+            fail('RESEARCH_NOT_CONNECTED',503,'仅配置好的联调课程可使用合成生成')
+        return await generate_fixture(course_id,request,actor,db,data,c,v)
     if data['budget_limit']!=0:fail('INVALID_RULE_BUDGET',422,'规则模板不消耗模型预算')
     async def change():
         await current_policy(db,actor,course_id,data['policy_version_id'])
@@ -235,6 +241,84 @@ async def generate(course_id:int,request:Request,actor=Depends(require_actor),db
     return await read_task(UUID(result['task_id']),request,actor,db)
 
 
+async def generate_fixture(course_id, request, actor, db, data, course, source):
+    if data['budget_limit'] != 0 or data['max_attempts'] != 1 or data['max_calls'] != 4:
+        fail('INVALID_FIXTURE_BUDGET',422,'合成联调固定为零费用、一次任务、四条固定响应')
+    demo = Path(__file__).resolve().parents[6]
+    integration = str(demo / 'integration')
+    if integration not in sys.path:
+        sys.path.append(integration)
+    from generation_candidate import CandidateError, run_fixture_candidate
+
+    async def change():
+        await current_policy(db,actor,course_id,data['policy_version_id'])
+        b.matching(request,b.course_etag(course))
+        targets = {}
+        for item in data['knowledge_point_ids']:
+            row = b.must(await b.one(db,'''SELECT code FROM ea.knowledge_point
+                WHERE id=:id AND course_id=:course AND org_id=:org FOR SHARE''',
+                id=item,course=course_id,org=actor.org_id))
+            if row['code'] in targets:
+                fail('INVALID_KNOWLEDGE_POINTS',422,'请选择知识点的单一版本')
+            targets[row['code']] = item
+        task, resource = str(uuid4()), str(uuid4())
+        def current_scope():
+            return os.getenv('EA_GENERATION_FIXTURE_COURSE_ID') == str(course_id)
+        try:
+            candidate = await asyncio.to_thread(
+                run_fixture_candidate, demo / '.runtime' / 'generation-fixtures', current_scope,
+                actor_id=str(actor.principal_id), course_id=str(course_id),
+                student_id=f"v2-{actor.org_id}-{data['target_student_id']}", job_id=task,
+                targets=targets, requirement=data['requirement'],
+                source_id=str(source['id']), source_hash=source['content_hash'],
+            )
+        except CandidateError as exc:
+            fail(str(exc),422,'合成候选未生成，请核对联调目标和状态')
+        await require_course(db,actor,course_id,action='content.generate',student_id=data['target_student_id'])
+        if not current_scope():
+            fail('FIXTURE_COURSE_DISABLED',409,'联调课程配置已失效')
+        latest = await b.resource_version(db,actor,source['id'],'content.read')
+        if latest['content_hash'] != source['content_hash'] or latest['archived_at'] or latest['processing_state'] != 'ready':
+            fail('SOURCE_NOT_READY',409,'生成期间资料状态已变化')
+        version_ids = [str(uuid4()) for _ in candidate.versions]
+        refs = {'task_id':task,'resource_id':resource,'resource_version_id':version_ids[-1]}
+        inputs = {'mode':'research_generator','run_mode':'fixture','source_version_id':str(source['id']),
+                  'policy_version_id':data['policy_version_id']}
+        await b.execute(db,'''INSERT INTO ea.task_run
+            (id,org_id,course_id,requested_by,operation,idempotency_key,input_hash,input_refs,result_refs,
+             status,attempt_count,max_attempts,completed_at)
+            VALUES(:id,:org,:course,:actor,'generate',:key,:hash,CAST(:input AS jsonb),CAST(:refs AS jsonb),
+                   'succeeded',1,1,now())''',
+            id=task,org=actor.org_id,course=course_id,actor=actor.principal_id,
+            key='fixture:'+request.headers['idempotency-key'],hash=b.digest(data),
+            input=b.canonical(inputs),refs=b.canonical(refs))
+        await b.execute(db,'''INSERT INTO ea.resource(id,org_id,course_id,kind,title,owner_id)
+            VALUES(:id,:org,:course,'exercise',:title,:actor)''',
+            id=resource,org=actor.org_id,course=course_id,actor=actor.principal_id,
+            title=candidate.versions[-1].content['title'])
+        for index, version in enumerate(candidate.versions):
+            await content_valid(db,actor,course_id,version.content,version.restricted)
+            manifest = {'provenance':candidate.provenance,'model_called':False,
+                        'artifact_sha256':candidate.artifact_hash,'question_sha256':version.question_hash}
+            await b.execute(db,'''INSERT INTO ea.resource_version
+                (id,resource_id,org_id,course_id,version,previous_version_id,source_version_id,policy_version_id,
+                 generation_task_id,content,restricted_content,content_hash,processing_state,generation_mode,
+                 provenance,source_manifest,forced_review,created_by)
+                VALUES(:id,:resource,:org,:course,:version,:previous,:source,:policy,:task,CAST(:content AS jsonb),
+                       CAST(:restricted AS jsonb),:hash,'ready','research_generator','simulated',
+                       CAST(:manifest AS jsonb),true,:actor)''',
+                id=version_ids[index],resource=resource,org=actor.org_id,course=course_id,version=index+1,
+                previous=version_ids[index-1] if index else None,source=source['id'],
+                policy=data['policy_version_id'],task=task,content=b.canonical(version.content),
+                restricted=b.canonical(version.restricted),
+                hash=b.digest({'content':version.content,'restricted_content':version.restricted}),
+                manifest=b.canonical(manifest),actor=actor.principal_id)
+        return refs
+
+    result = await b.write_once(db,actor,request,'generation.fixture',data,course_id,change)
+    return await read_task(UUID(result['task_id']),request,actor,db)
+
+
 @router.get('/tasks/{task_id}')
 @safe
 async def read_task(task_id:UUID,request:Request,actor=Depends(require_actor),db=Depends(get_db_session)):
@@ -245,7 +329,7 @@ async def read_task(task_id:UUID,request:Request,actor=Depends(require_actor),db
     result={k:t[k] for k in ['id','org_id','course_id','operation','status','execution_epoch','attempt_count','max_attempts','budget_limit','budget_spent','error_code','result_refs','created_at','updated_at']}
     if actor.role=='admin':result['result_refs']={}
     can_cancel=t['status'] in ('queued','running')
-    result.update(capability_status=None,run_mode=None,output_kind='none' if actor.role=='admin' else ('resource_candidate' if t['operation']=='generate' else 'projection'),can_cancel=can_cancel,can_retry=False,retry_block_reason='真实研究任务恢复尚未接通',cancellation_scope='prevent_result_application' if can_cancel else None,etag=b.etag(t['execution_epoch']))
+    result.update(capability_status=None,run_mode=t['input_refs'].get('run_mode'),output_kind='none' if actor.role=='admin' else ('resource_candidate' if t['operation']=='generate' else 'projection'),can_cancel=can_cancel,can_retry=False,retry_block_reason='真实研究任务恢复尚未接通',cancellation_scope='prevent_result_application' if can_cancel else None,etag=b.etag(t['execution_epoch']))
     return b.clean(result)
 
 
@@ -304,6 +388,13 @@ async def publish(resource_version_id:UUID,request:Request,actor=Depends(require
         prev=await b.one(db,'SELECT * FROM ea.publication_event WHERE resource_version_id=:v AND usergroup_id=:g ORDER BY event_no DESC LIMIT 1',v=resource_version_id,g=data['usergroup_id'])
         if data['expected_event_no']!=(prev['event_no'] if prev else 0) or str(data['previous_event_id'] or '')!=str(prev['id'] if prev else ''):fail('VERSION_CONFLICT',409,'发布状态已变化')
         if data['action']=='publish':
+            if v['provenance']=='simulated' and v['source_manifest'].get('artifact_sha256'):
+                if os.getenv('EA_GENERATION_FIXTURE_COURSE_ID') != str(v['course_id']):
+                    fail('FIXTURE_COURSE_DISABLED',409,'该课程未启用合成联调')
+                latest = b.must(await b.one(db,'''SELECT id FROM ea.resource_version
+                    WHERE resource_id=:id ORDER BY version DESC LIMIT 1''',id=v['resource_id']))
+                if latest['id'] != v['id']:
+                    fail('VERSION_CONFLICT',409,'请审核并发布当前候选版本')
             check=b.must(await b.one(db,"SELECT checks FROM ea.content_check WHERE id=:id AND resource_version_id=:v AND policy_version_id=:policy AND check_kind='deterministic' AND verdict='pass'",id=data['validation_id'],v=v['id'],policy=data['policy_version_id']))
             if not required_checks_pass(rules,check['checks']) or not required_checks_pass(rules,await deterministic_checks(db,actor,v)):fail('POLICY_CHECKS_REQUIRED',409,'当前策略要求的检查尚未通过')
             requires_review=v['forced_review'] or rules['require_human_review'] or (v['generation_mode']=='rule_template' and not rules['allow_rule_auto_publish'])

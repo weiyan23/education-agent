@@ -1364,9 +1364,10 @@
             "enum": [
               "preview",
               "execute",
+              "fixture",
               null
             ],
-            "description": "研究任务为preview/execute，非研究任务null；DTO从冻结input_refs投影。"
+            "description": "研究任务为preview/execute/fixture，非研究任务为null；DTO从冻结input_refs投影。"
           },
           "output_kind": {
             "type": "string",
@@ -4793,10 +4794,11 @@
             "type": "string",
             "enum": [
               "preview",
-              "execute"
+              "execute",
+              "fixture"
             ],
             "default": "preview",
-            "description": "默认preview且不读取模型配置；execute另需服务端受信PaidAuthorization。浏览器不能上传授权对象或付费同意布尔值。"
+            "description": "fixture仅限服务端显式配置的合成联调课程，使用固定响应且预算为零。preview不产生候选；execute须另行实现受信授权。"
           },
           "max_calls": {
             "type": "integer",
