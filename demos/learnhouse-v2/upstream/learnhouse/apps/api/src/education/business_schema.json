@@ -4790,6 +4790,10 @@
             "minimum": 1,
             "description": "真实存在且在当前课程授权班级中的public.user.id；服务端稳定映射worker student_id，不得用教师ID或假学生替代。"
           },
+          "confirm_paid": {
+            "type": "boolean",
+            "description": "教师确认本次模型调用可能计费。"
+          },
           "run_mode": {
             "type": "string",
             "enum": [
@@ -4798,7 +4802,7 @@
               "fixture"
             ],
             "default": "preview",
-            "description": "fixture仅限服务端显式配置的合成联调课程，使用固定响应且预算为零。preview不产生候选；execute须另行实现受信授权。"
+            "description": "fixture仅限服务端显式配置的合成联调课程，使用固定响应且预算为零。execute需教师确认且由服务端授权，preview不产生候选。"
           },
           "max_calls": {
             "type": "integer",

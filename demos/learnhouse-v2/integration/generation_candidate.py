@@ -1,11 +1,12 @@
 """Offline Java candidate generation and projection for the V2 business layer."""
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import subprocess
 import sys
 
-from research_adapter import AdapterError, CurrentContext, JobContext, Principal, ResearchAdapter, Snapshot
+from research_adapter import AdapterError, CurrentContext, JobContext, PaidAuthorization, Principal, ResearchAdapter, Snapshot
 
 REPOSITORY = Path(__file__).resolve().parents[3]
 
@@ -27,6 +28,20 @@ class Candidate:
     versions: tuple[CandidateVersion, ...]
     artifact_hash: str
     provenance: str = "simulated"
+
+
+def build_real_snapshot(*, student_id, targets, requirement, source_text, source_id, source_hash, source_kind):
+    catalog = json.loads((REPOSITORY / "config" / "java-basics.json").read_text(encoding="utf-8"))
+    if not targets or not set(targets).issubset(catalog["concepts"]):
+        raise CandidateError("UNKNOWN_RESEARCH_CONCEPT")
+    if not requirement.strip() or not source_text.strip() or len(source_text) > 3500:
+        raise CandidateError("INVALID_SOURCE_TEXT")
+    catalog["concepts"] = {code: catalog["concepts"][code] for code in targets}
+    catalog.update(prerequisites=[], associations=[], relation_sources={})
+    return Snapshot(
+        student_id, catalog, tuple(targets), source_kind, tuple(targets),
+        requirements=(requirement, f"课程资料（版本 {source_id}，哈希 {source_hash}）：\n{source_text}"),
+    )
 
 
 def _workflow():
@@ -76,7 +91,7 @@ class _FixtureResponses:
         return result
 
 
-def _project(question, review, question_hash, targets, source_id, source_hash):
+def _project(question, review, question_hash, targets, source_id, source_hash, provenance):
     ids = list(targets.values())
     samples = "\n\n".join(
         f"样例 {number}\n输入\n{sample['input']}\n输出\n{sample['output']}\n{sample['explanation']}"
@@ -85,15 +100,15 @@ def _project(question, review, question_hash, targets, source_id, source_hash):
     prompt = "\n\n".join((question["statement"], "输入格式\n" + question["input_format"],
                           "输出格式\n" + question["output_format"], "约束\n" + question["constraints"], samples))
     content = {
-        "title": question["title"], "body_text": "合成样例 · 固定模型响应",
+        "title": question["title"], "body_text": "合成样例 · 固定模型响应" if provenance == "simulated" else "",
         "questions": [{"item_id": "q1", "type": "code_text", "prompt": prompt, "language": "java",
                        "maximum_score": 100, "knowledge_point_ids": ids}],
         "knowledge_point_ids": ids,
-        "source_refs": [{"resource_version_id": source_id, "locator": "联调资料版本", "content_hash": source_hash}],
+        "source_refs": [{"resource_version_id": source_id, "locator": "课程资料版本", "content_hash": source_hash}],
     }
     restricted = {
         "answers": [{"item_id": "q1", "value": question["reference_code"], "rationale": question["explanation"]}],
-        "grading_notes": "固定模拟的六维审核\n" + "\n".join(
+        "grading_notes": ("固定模拟的六维审核\n" if provenance == "simulated" else "模型六维审核\n") + "\n".join(
             f"{check['dimension']} · {check['status']} · {check['location']} · {check['reason']}"
             for check in review["checks"]
         ),
@@ -136,18 +151,48 @@ def run_fixture_candidate(storage, active, *, actor_id, course_id, student_id, j
         report = adapter.read_generation(principal, snapshot, job, artifact)
         if report["request_sha256"] != fingerprint(request):
             raise CandidateError("ARTIFACT_MISMATCH")
-        versions = []
-        for version in report["versions"]:
-            question, review = version["question"], version["review"]
-            validate_question(request, question)
-            validate_review(request, question, review)
-            if version["version"] != len(versions) + 1 or version["question_sha256"] != fingerprint(question):
-                raise CandidateError("ARTIFACT_MISMATCH")
-            versions.append(_project(question, review, version["question_sha256"], targets, source_id, source_hash))
-        if not 1 <= len(versions) <= 2 or any(
-            check["status"] == "fail" for check in versions[-1].review["checks"]
-        ):
-            raise CandidateError("FIXTURE_CANDIDATE_UNAVAILABLE")
-        return Candidate(tuple(versions), artifact.sha256)
+        return _candidate(report, artifact.sha256, targets, source_id, source_hash, "simulated")
     except AdapterError as error:
         raise CandidateError(error.code) from error
+
+
+def _candidate(report, artifact_hash, targets, source_id, source_hash, provenance):
+    _, validate_question, validate_review, _, _, fingerprint, _, _ = _workflow()
+    request = {"target_concept_ids": list(targets)}
+    versions = []
+    for version in report["versions"]:
+        question, review = version["question"], version["review"]
+        validate_question(request, question)
+        validate_review(request, question, review)
+        if version["version"] != len(versions) + 1 or version["question_sha256"] != fingerprint(question):
+            raise CandidateError("ARTIFACT_MISMATCH")
+        versions.append(_project(question, review, version["question_sha256"], targets, source_id, source_hash, provenance))
+    if not 1 <= len(versions) <= 2 or any(check["status"] == "fail" for check in versions[-1].review["checks"]):
+        raise CandidateError("CANDIDATE_UNAVAILABLE")
+    return Candidate(tuple(versions), artifact_hash, provenance)
+
+
+def run_real_candidate(storage, active, *, actor_id, course_id, job_id, snapshot,
+                       targets, source_id, source_hash, env_file, max_calls):
+    principal = Principal(actor_id, course_id, frozenset({snapshot.student_id}),
+                          frozenset(targets), frozenset({"generate"}))
+    job = JobContext(job_id, job_id, 0, 1)
+    fingerprint = ResearchAdapter.input_fingerprint("generate", principal, snapshot, job, max_calls)
+    authorization = PaidAuthorization(job_id, actor_id, job_id, "generate", fingerprint,
+                                      max_calls, datetime.now(timezone.utc) + timedelta(minutes=2))
+    try:
+        adapter = ResearchAdapter(storage, lambda *_: CurrentContext(0, 1, active()),
+                                  repository=REPOSITORY, interpreter=Path(sys.executable), env_file=env_file)
+        result = adapter.run("generate", principal, snapshot, job, mode="execute",
+                             max_calls=max_calls, authorization=authorization)
+        if result.status != "needs_review" or result.model_connection != "response_received":
+            raise CandidateError(result.error_code or "GENERATION_" + result.status.upper())
+        artifact, = result.artifact_refs
+        report = adapter.read_generation(principal, snapshot, job, artifact)
+        return _candidate(report, artifact.sha256, targets, source_id, source_hash, "real")
+    except AdapterError as error:
+        raise CandidateError(error.code) from error
+    except (OSError, TypeError, KeyError, ValueError) as error:
+        if isinstance(error, CandidateError):
+            raise
+        raise CandidateError("GENERATION_RESULT_UNAVAILABLE") from error

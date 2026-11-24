@@ -33,6 +33,14 @@ def clean(value):
     return jsonable_encoder(value)
 
 
+def generation_env_file():
+    configured = os.getenv('EA_GENERATION_ENV_FILE')
+    if configured:
+        path = Path(configured).expanduser()
+        if path.is_absolute() and path.is_file():
+            return path
+
+
 def etag(value):
     return '"' + str(value) + '"'
 
@@ -158,7 +166,7 @@ async def get_resource(db,actor,resource_id):
     if actor.role=='teacher':
         await require_course(db,actor,r['course_id'],action='content.read')
         result.update(restricted_content=selected['restricted_content'],checks=checks,publication_events=events,version_history=[(await version_summary(db,v,classes))[0] for v in versions])
-        if selected['provenance']=='simulated':
+        if selected['source_manifest'].get('artifact_sha256'):
             result['candidate_history'] = [
                 {'version': v['version'], 'content': v['content'],
                  'grading_notes': (v['restricted_content'] or {}).get('grading_notes', '')}
@@ -188,7 +196,7 @@ async def get_course(db,actor,course_id):
         except HTTPException as e:
             if e.status_code==403:continue
             raise
-    policy=await one(db,"SELECT id FROM ea.policy_version WHERE course_id=:course AND org_id=:org ORDER BY version DESC,created_at DESC LIMIT 1",course=course_id,org=actor.org_id)
+    policy=await one(db,"SELECT id,rules FROM ea.policy_version WHERE course_id=:course AND org_id=:org ORDER BY version DESC,created_at DESC LIMIT 1",course=course_id,org=actor.org_id)
     bindings=(await list_bindings(db,actor,course_id))['items']
     summary = await course_summary(db,actor,c)
     capabilities = [
@@ -197,6 +205,13 @@ async def get_course(db,actor,course_id):
     ]
     if actor.role=='teacher' and 'content.generate' in summary['allowed_actions'] and os.getenv('EA_GENERATION_FIXTURE_COURSE_ID') == str(course_id):
         capabilities.append({'key':'generation_fixture','status':'available','reason':'合成 Java 出题联调'})
+    if actor.role=='teacher' and 'content.generate' in summary['allowed_actions'] and generation_env_file() and policy:
+        rules = policy_rules(policy)
+        if 'research_generator' in rules['allowed_generation_modes'] and rules['maximum_task_budget'] > 0:
+            catalog = Path(__file__).resolve().parents[8] / 'config/java-basics.json'
+            codes = list(json.loads(catalog.read_text(encoding='utf-8'))['concepts'])
+            capabilities.append({'key':'generation_execute','status':'available','reason':'模型出题',
+                                 'concept_codes':codes,'maximum_task_budget':rules['maximum_task_budget']})
     return clean({'course':summary,'description':c['description'] or '', 'learnings':c['learnings'] or '', 'chapters':[],'classes':groups,'resources':resources,'bindings':bindings,'policy_version_id':policy['id'] if policy else None,'knowledge_points':await rows(db,'SELECT id,code,label,version FROM ea.knowledge_point WHERE course_id=:course AND org_id=:org ORDER BY code',course=course_id,org=actor.org_id),'capabilities':capabilities,'etag':course_etag(c)})
 
 
