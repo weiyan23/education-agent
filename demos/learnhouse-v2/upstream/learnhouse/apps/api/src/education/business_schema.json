@@ -1364,9 +1364,10 @@
             "enum": [
               "preview",
               "execute",
+              "fixture",
               null
             ],
-            "description": "研究任务为preview/execute，非研究任务null；DTO从冻结input_refs投影。"
+            "description": "研究任务为preview/execute/fixture，非研究任务为null；DTO从冻结input_refs投影。"
           },
           "output_kind": {
             "type": "string",
@@ -4789,14 +4790,19 @@
             "minimum": 1,
             "description": "真实存在且在当前课程授权班级中的public.user.id；服务端稳定映射worker student_id，不得用教师ID或假学生替代。"
           },
+          "confirm_paid": {
+            "type": "boolean",
+            "description": "教师确认本次模型调用可能计费。"
+          },
           "run_mode": {
             "type": "string",
             "enum": [
               "preview",
-              "execute"
+              "execute",
+              "fixture"
             ],
             "default": "preview",
-            "description": "默认preview且不读取模型配置；execute另需服务端受信PaidAuthorization。浏览器不能上传授权对象或付费同意布尔值。"
+            "description": "fixture仅限服务端显式配置的合成联调课程，使用固定响应且预算为零。execute需教师确认且由服务端授权，preview不产生候选。"
           },
           "max_calls": {
             "type": "integer",

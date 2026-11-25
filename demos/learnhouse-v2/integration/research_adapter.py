@@ -6,6 +6,7 @@ snapshot construction. All return values exclude subprocess output and paths.
 """
 from __future__ import annotations
 
+from contextlib import closing
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 import hashlib
@@ -144,18 +145,21 @@ class ResearchAdapter:
     def __init__(self, storage: Path, current_context: Callable[[Principal, str, str], CurrentContext],
                  *, env_file: Optional[Path] = None,
                  transport: Callable = subprocess_transport, fixture_transport: bool = False,
-                 timeout_seconds: int = 600):
+                 timeout_seconds: int = 600, repository: Path = REPOSITORY,
+                 interpreter: Path = INTERPRETER):
         """Constructor configuration belongs to deployment code, never a request.
 
         current_context must recheck current object permissions and version/epoch.
         This library never creates users, grants scopes or changes product records.
         """
         _require(callable(current_context), "CURRENT_CONTEXT_REQUIRED")
-        _require(INTERPRETER.is_file() and (REPOSITORY / "AGENTS.md").is_file(), "RUNTIME_UNAVAILABLE")
+        self.repository = repository.resolve()
+        self.interpreter = interpreter
+        _require(self.interpreter.is_file() and (self.repository / "AGENTS.md").is_file(), "RUNTIME_UNAVAILABLE")
         _require(type(timeout_seconds) is int and 1 <= timeout_seconds <= 1800, "INVALID_TIMEOUT")
         _require(not fixture_transport or transport is not subprocess_transport, "FIXTURE_TRANSPORT_REQUIRED")
         self.storage = Path(storage).resolve()
-        _require(not self.storage.is_relative_to(REPOSITORY), "STORAGE_INSIDE_UPSTREAM")
+        _require(not self.storage.is_relative_to(self.repository) or fixture_transport, "STORAGE_INSIDE_UPSTREAM")
         self.storage.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.storage.chmod(0o700)
         self.env_file = Path(env_file).resolve() if env_file else None
@@ -163,13 +167,13 @@ class ResearchAdapter:
         self.transport = transport
         self.fixture_transport = fixture_transport
         self.timeout = timeout_seconds
-        source_files = [REPOSITORY / name for name in SCRIPTS.values()]
+        source_files = [self.repository / name for name in SCRIPTS.values()]
         for module in ("profiling", "generation", "recommendation", "submissions"):
-            source_files.extend(sorted((REPOSITORY / module).glob("*.py")))
-        self.implementation = _digest({str(p.relative_to(REPOSITORY)): hashlib.sha256(p.read_bytes()).hexdigest()
+            source_files.extend(sorted((self.repository / module).glob("*.py")))
+        self.implementation = _digest({str(p.relative_to(self.repository)): hashlib.sha256(p.read_bytes()).hexdigest()
                                        for p in source_files})
         self.db = self.storage / "adapter.sqlite3"
-        with sqlite3.connect(self.db) as db:
+        with closing(sqlite3.connect(self.db)) as db, db:
             db.execute("""CREATE TABLE IF NOT EXISTS jobs (
                 job_id TEXT PRIMARY KEY, idem_scope TEXT NOT NULL UNIQUE,
                 identity TEXT NOT NULL, status TEXT NOT NULL, result TEXT)""")
@@ -251,7 +255,7 @@ class ResearchAdapter:
         _require(snapshot.source_kind != "test_fixture" or self.fixture_transport, "FIXTURE_EXECUTION_FORBIDDEN")
 
     def _reserve(self, job, scope, identity):
-        with sqlite3.connect(self.db, timeout=10) as db:
+        with closing(sqlite3.connect(self.db, timeout=10)) as db, db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT job_id,identity,status,result FROM jobs WHERE job_id=? OR idem_scope=?",
                              (job.job_id, scope)).fetchall()
@@ -267,7 +271,7 @@ class ResearchAdapter:
         return None
 
     def _finish(self, result):
-        with sqlite3.connect(self.db) as db:
+        with closing(sqlite3.connect(self.db)) as db, db:
             db.execute("UPDATE jobs SET status=?,result=? WHERE job_id=?",
                        (result.status, json.dumps(asdict(result)), result.job_id))
         return result
@@ -283,7 +287,7 @@ class ResearchAdapter:
         inputs.mkdir(mode=0o700)
         catalog = inputs / "catalog.json"
         self._write(catalog, snapshot.catalog)
-        argv = [str(INTERPRETER), "-B", str(REPOSITORY / SCRIPTS[operation]),
+        argv = [str(self.interpreter), "-B", str(self.repository / SCRIPTS[operation]),
                 "--output", str(job_dir / "output"), "--cache", str(job_dir / "cache"),
                 "--env-file", str(self.env_file) if mode == "execute" else str(job_dir / "unused.env")]
         if operation == "profile":
@@ -350,10 +354,14 @@ class ResearchAdapter:
     def run(self, operation: str, principal: Principal, snapshot: Snapshot, job: JobContext, *,
             mode: str = "preview", max_calls: Optional[int] = None,
             authorization: Optional[PaidAuthorization] = None) -> AdapterResult:
-        _require(mode in ("preview", "execute"), "UNSUPPORTED_MODE")
+        _require(mode in ("preview", "execute", "fixture"), "UNSUPPORTED_MODE")
         # Detach mutable nested data before hashing or writing it.
         snapshot = Snapshot.from_mapping(asdict(snapshot)) if isinstance(snapshot, Snapshot) else snapshot
         self._validate(operation, principal, snapshot, job)
+        if mode == "fixture":
+            _require(self.fixture_transport and operation == "generate"
+                     and snapshot.source_kind == "test_fixture" and authorization is None,
+                     "FIXTURE_EXECUTION_FORBIDDEN")
         _require(max_calls is None or type(max_calls) is int and 1 <= max_calls <= LIMITS[operation],
                  "INVALID_BUDGET")
         fingerprint = self.input_fingerprint(operation, principal, snapshot, job, max_calls)
@@ -364,7 +372,7 @@ class ResearchAdapter:
             config_hash = hashlib.sha256(self.env_file.read_bytes()).hexdigest() if mode == "execute" else None
         except OSError:
             raise AdapterError("MODEL_CONFIGURATION_UNREADABLE") from None
-        identity = _digest([fingerprint, mode, str(INTERPRETER), str(REPOSITORY),
+        identity = _digest([fingerprint, mode, str(self.interpreter), str(self.repository),
                             self.implementation, config_hash, self.timeout, self.fixture_transport])
         scope = _digest([principal.course_id, principal.actor_id, operation, job.idempotency_key])
         previous = self._reserve(job, scope, identity)
@@ -376,7 +384,7 @@ class ResearchAdapter:
             argv = self._command(operation, snapshot, job_dir, mode, max_calls)
             # Recheck after materialization and immediately before dispatch.
             self._current(principal, operation, snapshot, job)
-            completed = self.transport(argv, cwd=REPOSITORY, timeout=self.timeout)
+            completed = self.transport(argv, cwd=self.repository, timeout=self.timeout)
             self._current(principal, operation, snapshot, job)
             if completed.returncode != 0:
                 return self._finish(AdapterResult(job.job_id, "failed", "UPSTREAM_FAILED"))
@@ -396,6 +404,25 @@ class ResearchAdapter:
                                               else "failed", exc.code))
         except (OSError, ValueError, TypeError, KeyError):
             return self._finish(AdapterResult(job.job_id, "unknown", "ADAPTER_RESULT_UNAVAILABLE"))
+
+    def read_generation(self, principal, snapshot, job, artifact):
+        """Resolve an accepted generation reference for an authorized server caller."""
+        self._validate("generate", principal, snapshot, job)
+        with closing(sqlite3.connect(self.db)) as db:
+            scope = _digest([principal.course_id, principal.actor_id, "generate", job.idempotency_key])
+            row = db.execute("SELECT result FROM jobs WHERE job_id=? AND idem_scope=? AND status='needs_review'",
+                             (job.job_id, scope)).fetchone()
+        _require(row is not None and asdict(artifact) in json.loads(row[0])["artifact_refs"],
+                 "ARTIFACT_MISMATCH")
+        path = self.storage / job.job_id / "output" / "generation.json"
+        _require(path.is_file() and not path.is_symlink() and path.resolve().is_relative_to(self.storage)
+                 and path.stat().st_size <= 8_000_000, "ARTIFACT_MISMATCH")
+        raw = path.read_bytes()
+        _require(hashlib.sha256(raw).hexdigest() == artifact.sha256, "ARTIFACT_MISMATCH")
+        result = json.loads(raw)
+        _require(result.get("student_id") == snapshot.student_id, "ARTIFACT_MISMATCH")
+        self._current(principal, "generate", snapshot, job)
+        return result
 
 
 @dataclass(frozen=True)

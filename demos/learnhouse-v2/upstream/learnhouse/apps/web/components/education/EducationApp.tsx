@@ -1144,7 +1144,24 @@ function Generator({
       (d.knowledge_points || []).map((x: D) => x.id)
     ),
     [busy, setBusy] = useState(false),
-    [error, setError] = useState('')
+    [error, setError] = useState(''),
+    [generationMode, setGenerationMode] = useState('rule_template'),
+    [targetStudent, setTargetStudent] = useState(''),
+    [confirmed, setConfirmed] = useState(false),
+    [budgetLimit, setBudgetLimit] = useState(''),
+    [maxCalls, setMaxCalls] = useState(8)
+  const fixtureMode = generationMode === 'fixture'
+  const executeMode = generationMode === 'execute'
+  const executeCapability = d.capabilities?.find((value: D) => value.key === 'generation_execute')
+  const fixtureCapability = d.capabilities?.some((value: D) => value.key === 'generation_fixture')
+  const eligibleTargets = (d.knowledge_points || []).filter(
+    (point: D) => executeMode ? executeCapability?.concept_codes?.includes(point.code) : point.code === 'java.condition'
+  )
+  const students = Array.from(new Map<number, D>(
+    (d.classes || []).flatMap((group: D) =>
+      (group.members || []).map((member: D): [number, D] => [member.user_id, member])
+    )
+  ).values())
   async function generate(e: React.FormEvent) {
     e.preventDefault()
     setBusy(true)
@@ -1154,16 +1171,19 @@ function Generator({
         method: 'POST',
         etag: d.etag,
         body: {
-          mode: 'rule_template',
+          ...((fixtureMode || executeMode)
+            ? { mode: 'research_generator', run_mode: generationMode, target_student_id: Number(targetStudent),
+                max_calls: fixtureMode ? 4 : maxCalls, ...(executeMode ? { confirm_paid: confirmed } : {}) }
+            : { mode: 'rule_template' }),
           source_version_id: source,
           policy_version_id: d.policy_version_id,
           knowledge_point_ids: selected,
           requirement,
-          budget_limit: 0,
+          budget_limit: executeMode ? Number(budgetLimit) : 0,
           max_attempts: 1,
         },
       })
-      notify('规则练习已生成，请检查后发布')
+      notify(executeMode ? '已提交出题任务' : fixtureMode ? '合成候选已生成，请审核后发布' : '规则练习已生成，请检查后发布')
       if (task.result_refs?.resource_id)
         router.push(
           pathFor('teacher', `/resources/${task.result_refs.resource_id}`)
@@ -1181,8 +1201,35 @@ function Generator({
         <form className="edu-form" onSubmit={generate}>
           <h2>准备一份练习</h2>
           <p className="edu-muted">
-            选择课程资料与目标知识点，生成可检查的规则练习。
+            选择课程资料与目标知识点，生成待检查的练习。
           </p>
+          {(fixtureCapability || executeCapability) && (
+            <Field label="生成方式">
+              <select className={INPUT} value={generationMode} onChange={(e) => {
+                const mode = e.target.value
+                setGenerationMode(mode)
+                setConfirmed(false)
+                setSelected((d.knowledge_points || []).filter((point: D) =>
+                  mode === 'rule_template' || (mode === 'fixture' && point.code === 'java.condition') ||
+                  (mode === 'execute' && executeCapability?.concept_codes?.includes(point.code))
+                ).map((point: D) => point.id))
+              }}>
+                <option value="rule_template">规则模板</option>
+                {fixtureCapability && <option value="fixture">研究生成联调（合成样例）</option>}
+                {executeCapability && <option value="execute">模型生成 Java 练习</option>}
+              </select>
+            </Field>
+          )}
+          {(fixtureMode || executeMode) && (
+            <Field label={fixtureMode ? '联调学生' : '目标学生'}>
+              <select className={INPUT} value={targetStudent} onChange={(e) => setTargetStudent(e.target.value)} required>
+                <option value="">请选择联调学生</option>
+                {students.map((student) => (
+                  <option key={student.user_id} value={student.user_id}>{student.display_name}</option>
+                ))}
+              </select>
+            </Field>
+          )}
           <Field label="来源资料">
             <select
               className={INPUT}
@@ -1201,7 +1248,7 @@ function Generator({
           <fieldset>
             <legend className="edu-small font-semibold mb-2">目标知识点</legend>
             <div className="edu-stack">
-              {d.knowledge_points?.map((k: D) => (
+              {((fixtureMode || executeMode) ? eligibleTargets : d.knowledge_points)?.map((k: D) => (
                 <label key={k.id} className="edu-inline">
                   <input
                     type="checkbox"
@@ -1229,15 +1276,33 @@ function Generator({
               required
             />
           </Field>
+          {executeMode && (
+            <>
+              <Field label="课程审批额度">
+                <input className={INPUT} type="number" min="0.000001" step="any"
+                  max={executeCapability.maximum_task_budget} required value={budgetLimit}
+                  onChange={(e) => { setBudgetLimit(e.target.value); setConfirmed(false) }} />
+              </Field>
+              <Field label="模型请求次数上限">
+                <input className={INPUT} type="number" min={1} max={8} required value={maxCalls}
+                  onChange={(e) => { setMaxCalls(Number(e.target.value)); setConfirmed(false) }} />
+              </Field>
+              <label className="edu-inline">
+                <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} required />
+                我确认本次出题会发送所选资料和练习要求给模型，供应商可能计费。
+              </label>
+            </>
+          )}
           {error && <Notice error>{error}</Notice>}
           <div>
             <Button
               variant="primary"
               type="submit"
               loading={busy}
-              disabled={!source || !selected.length}
+              disabled={!source || !selected.length || (fixtureMode && (!targetStudent || selected.length !== 1)) ||
+                (executeMode && (!targetStudent || !confirmed || !budgetLimit))}
             >
-              生成规则练习
+              {executeMode ? '提交模型出题' : fixtureMode ? '生成合成候选' : '生成规则练习'}
             </Button>
           </div>
         </form>
@@ -1563,6 +1628,21 @@ function Resource({
                 {role === 'teacher' && d.restricted_content && (
                   <Panel padded>
                     <h3>教师参考答案</h3>
+                    {(d.version.generation_mode === 'research_generator' || d.candidate_history) && (
+                      <>
+                        <p>{d.version.provenance === 'simulated' ? '合成样例' : '模型生成'} · 第 {d.version.version} 版</p>
+                        <pre className="edu-content whitespace-pre-wrap">{d.restricted_content.grading_notes}</pre>
+                        {d.candidate_history?.map((version: D) => (
+                          <details key={version.version}>
+                            <summary>第 {version.version} 版候选</summary>
+                            {version.content.questions.map((question: D) => (
+                              <pre key={question.item_id} className="edu-content whitespace-pre-wrap">{question.prompt}</pre>
+                            ))}
+                            <pre className="edu-content whitespace-pre-wrap">{version.grading_notes}</pre>
+                          </details>
+                        ))}
+                      </>
+                    )}
                     <div className="edu-stack mt-3">
                       {(
                         d.restricted_content.answer_keys ||
@@ -2827,9 +2907,7 @@ function Task({ id }: { id: string }) {
                 ))
             )}
             <Button onClick={state.reload}>刷新任务状态</Button>
-            <Notice>
-              预览结果不等于模型已经执行。本版研究任务恢复尚未启用。
-            </Notice>
+            {d.status === 'running' && <Notice>模型正在出题。你可以稍后刷新查看结果。</Notice>}
           </Panel>
         </Page>
       )}
