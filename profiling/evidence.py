@@ -1,6 +1,7 @@
 """Shared eligibility checks for historical and received student evidence."""
 from copy import deepcopy
 from datetime import datetime, timezone
+import math
 from .run_store import fingerprint
 
 ALLOWED_EVIDENCE_KINDS = {'code_submission', 'boolean_choice', 'teacher_grade', 'tool_observation'}
@@ -25,7 +26,8 @@ def validate_effective_grade(grade):
     for k in ('score', 'max_score', 'status', 'graded_by', 'graded_at'):
         if k not in grade:
             raise ValueError(f'effective_grade missing required field: {k}')
-    if not isinstance(grade['score'], (int, float)) or not isinstance(grade['max_score'], (int, float)):
+    if any(type(grade[k]) not in (int, float) or not math.isfinite(grade[k])
+           for k in ('score', 'max_score')):
         raise ValueError('score and max_score must be numeric')
     if grade['score'] < 0 or grade['max_score'] <= 0 or grade['score'] > grade['max_score']:
         raise ValueError('score must be between 0 and max_score')
@@ -53,6 +55,8 @@ def validate_learning_evidence(row, student_id):
     grade = row.get('effective_grade')
     if grade is not None:
         validate_effective_grade(grade)
+    if not is_evidence_active(row):
+        raise ValueError('Inactive or unconfirmed evidence cannot enter a current profile')
 
     if row.get('split') == 'train':
         if origin not in (None, 'historical_student_submission') or 'submission' in row:
@@ -83,7 +87,7 @@ def is_evidence_active(row):
     if row.get('lifecycle_status') in ('revoked', 'superseded'):
         return False
     grade = row.get('effective_grade')
-    if isinstance(grade, dict) and grade.get('status') == 'revoked':
+    if isinstance(grade, dict) and grade.get('status') != 'effective':
         return False
     return True
 
@@ -109,7 +113,7 @@ def invalidate_evidence(row, reason, revoked_by, revoked_at=None, new_status='re
 
 def create_evidence_packet(student_id, problem_id, program, question, *,
                            submission_id=None, origin='student', evidence_kind='code_submission',
-                           effective_grade=None, received_at=None, generation_run_id='manual_intake',
+                           effective_grade=None, received_at=None, submitted_at=None, generation_run_id='manual_intake',
                            question_version=1):
     """Factory creating a standardized EvidencePacket compliant with live evidence requirements."""
     ts = received_at or datetime.now(timezone.utc).isoformat()
@@ -123,6 +127,8 @@ def create_evidence_packet(student_id, problem_id, program, question, *,
         'question_sha256': fingerprint(question),
         'generation_run_id': generation_run_id,
         'received_at': ts,
+        # Unknown student-side time remains unknown; do not copy the server receipt time.
+        'submitted_at': submitted_at,
         'program_sha256': fingerprint(program),
         'question_text_sha256': fingerprint(question),
         'question_version': question_version

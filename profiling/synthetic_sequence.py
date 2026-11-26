@@ -214,4 +214,26 @@ def generate_synthetic_sequences(student_id='student_synth_01', course_id='java_
         ]
     }
 
-    return [seq1, seq2, seq3]
+    sequences = [seq1, seq2, seq3]
+    for sequence in sequences:
+        expanded = []
+        for action in sequence['actions']:
+            action = deepcopy(action)
+            metrics = action['behavior_metrics']
+            if 'result' in metrics and action['action_type'] not in ('grade_feedback', 'correction_revision'):
+                # Keep the submission itself separate from its simulated judgment.
+                feedback = deepcopy(action)
+                feedback['action_type'] = 'grade_feedback'
+                feedback['behavior_metrics']['duration_seconds'] = 0
+                feedback['behavior_metrics']['evaluation_status'] = 'synthetic_effective'
+                metrics.pop('result')
+                expanded.extend([action, feedback])
+            else:
+                if 'result' in metrics:
+                    metrics['evaluation_status'] = 'synthetic_effective'
+                expanded.append(action)
+        for index, action in enumerate(expanded, start=1):
+            action['step_index'] = index
+        sequence['actions'] = expanded
+        sequence['learning_evidence_eligible'] = False
+    return sequences

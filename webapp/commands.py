@@ -23,14 +23,14 @@ FIELDS = {
     'submit': 'generation_run submission',
     'verify_reference': 'generation_run cases approve_sha256',
     'verify_student': 'records submission_run record_id cases approve_sha256',
-    'reconstruct': 'base_profile catalog revoke_record_id reason operator_id max_calls',
+    'reconstruct': 'base_profile catalog course_id correction_event revoke_record_id reason operator_id max_calls',
     'sequence': 'sequence_file catalog',
 }
 ARRAYS = {'scope', 'targets', 'goals', 'requirement', 'verification_run'}
 PATHS = {
     'records', 'concepts', 'catalog', 'profile', 'usage_history',
     'recommendation_run', 'base_profile', 'submission_run', 'generation_run',
-    'submission', 'cases', 'verification_run', 'sequence_file',
+    'submission', 'cases', 'verification_run', 'sequence_file', 'correction_event',
 }
 
 

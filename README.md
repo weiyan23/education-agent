@@ -2,13 +2,15 @@
 
 本科毕设原型：历史证据 → 知识点画像 → 练习目标推荐 → 出题与检查 → 作答 → 更新。首轮使用Java_5；教师直接指定知识点也可出题。
 
-## LearnHouse 教学闭环 Demo V2
+## LearnHouse 阶段集成 Demo V2.1
 
 新版学生端、教师端和管理后台位于 [`demos/learnhouse-v2`](demos/learnhouse-v2/README.md)，包含固定版本 LearnHouse 社区源码、自有教育业务扩展、数据设计和验收记录。按[本地运行说明](demos/learnhouse-v2/RUN_LOCAL.md)准备独立数据库与依赖后，在该目录运行 `python scripts/local_demo.py start`。
 
-本版已实现真实登录、发布、作答、批阅、复核及成绩统计；研究模型尚未正式接入 Web。以下根目录原型和研究模块保留，用于后续适配与验证；两个入口的运行环境和数据不能混用。源码目录不包含密码、API 密钥、运行数据库或原始学生数据。
+V2.1 沿用 V2 的登录、发布、作答、批阅、复核及成绩统计，新增生成适配、教师/管理员合成时序预览、可信推荐结果展示，并修复权限与证据边界。真实事件→研究画像入库→自动推荐尚未贯通。阶段范围、测试及下周任务见 [V2.1 交付说明](demos/learnhouse-v2/deliverables/06-integration-v21/README.md)，页面、流程及权限见 [产品补充说明](demos/learnhouse-v2/deliverables/06-integration-v21/product-delta.md)。
 
-## 首次启动
+必须保留整个仓库，Demo 会调用根研究模块。两个入口的运行环境和数据不能混用。源码不包含密码、API 密钥或运行数据库；新工作树须自行配置独立环境。当前集成分支为 `integration/demo-v2.1-2026-11-26`；此前 V2 验收记录为历史基线，本轮验证边界以 `06-integration-v21/acceptance.json` 为准。
+
+## 根研究工作台启动（与 LearnHouse Demo 分开）
 
 在仓库根目录运行（当前开发环境为 Python 3.12）：
 
@@ -241,6 +243,14 @@ python -m unittest discover -s tests
 
 ## 任务三 · 基于动态画像的自适应推荐
 
+### V2.1 阶段边界
+
+本阶段自动推荐调度尚未接通。学生注册推荐任务接口返回 `503 RECOMMENDATION_EXECUTION_UNAVAILABLE`，不创建无人执行的排队任务；没有可用研究画像时仍显示课程规则建议或明确的能力说明。保留已有推荐读取，以及对服务端既有任务、可信产物的严格校验导入。产物导入不会自动调用模型，也不表示画像→推荐→作答闭环已经完成。
+
+推荐练习资格已纳入普通作答、有效补交/订正授权和可继续草稿；返回 `start_option` 指定本次可用的授权。截止时间、配额、撤权和提交仍由服务端/数据库再次验证。已有无效草稿会被当前开始作答接口复用，推荐映射因此不会把它作为可作答练习返回；修复旧草稿或转换授权不属于本轮范围。
+
+下表保留原推荐分支的实现及历史验收记录；不能视为 V2.1 合并版本已经重新完成数据库、浏览器和真实模型验收。V2.1 离线回归命令见下文，最终集成验收另行记录。
+
 ### 实现与验收状态
 
 | 步骤 | 当前实现 | 验收状态 |
@@ -256,29 +266,40 @@ python -m unittest discover -s tests
 ### 最终文件清单
 | 仓库相对路径 | 职责 |
 | --- | --- |
-| [integration/research_adapter.py](integration/research_adapter.py) | 定位合并仓库的研究 CLI 和解释器 |
-| [integration/recommendation_input.py](integration/recommendation_input.py) | 冻结画像快照，核对版本及 B 报告上下文 |
-| [integration/tests/test_recommendation_input.py](integration/tests/test_recommendation_input.py) | 画像接收、拒绝、哈希与目标查询测试 |
-| [integration/recommendation_artifact.py](integration/recommendation_artifact.py) | 读取可信适配器产物并复核报告哈希 |
-| [upstream/learnhouse/apps/api/src/education/recommendation_mapping.py](upstream/learnhouse/apps/api/src/education/recommendation_mapping.py) | 按知识目标、发布版本、作业和学生权限匹配练习 |
-| [upstream/learnhouse/apps/api/src/education/recommendation_import.py](upstream/learnhouse/apps/api/src/education/recommendation_import.py) | 登记任务、事务导入、历史交接和失效复核 |
-| [upstream/learnhouse/apps/api/src/education/business.py](upstream/learnhouse/apps/api/src/education/business.py) | 按当前画像读取课程规则建议 |
-| [upstream/learnhouse/apps/api/src/education/business_routes.py](upstream/learnhouse/apps/api/src/education/business_routes.py) | 提供映射、导入、列表与版本化访问接口 |
-| [scripts/run_v2_api.py](scripts/run_v2_api.py) | 启动业务 API 并加载研究校验模块 |
-| [scripts/test_v2_demo.py](scripts/test_v2_demo.py) | 在教学业务流程中验证练习映射 |
-| [scripts/check_recommendation_mapping.py](scripts/check_recommendation_mapping.py) | 真实学生会话下验证映射、权限与版本 |
-| [scripts/check_recommendation_invalidation.py](scripts/check_recommendation_invalidation.py) | 验证改分、班级撤权和资源撤回后的旧入口 |
-| [scripts/check_recommendation_import.py](scripts/check_recommendation_import.py) | 在临时 PostgreSQL 中验收正式 B 导入 |
-| [integration/tests/recommendation_import/seed.sql](integration/tests/recommendation_import/seed.sql) | 隔离验收专用合成数据，由脚本加载 |
-| [upstream/learnhouse/apps/web/components/education/EducationApp.tsx](upstream/learnhouse/apps/web/components/education/EducationApp.tsx) | 显示推荐理由、画像版本、获准证据摘要与练习入口 |
-| [upstream/learnhouse/apps/web/components/education/api.ts](upstream/learnhouse/apps/web/components/education/api.ts) | 共享接口客户端、来源标签与失效提示 |
+| [demos/learnhouse-v2/integration/research_adapter.py](demos/learnhouse-v2/integration/research_adapter.py) | 定位合并仓库的研究 CLI 和解释器 |
+| [demos/learnhouse-v2/integration/recommendation_input.py](demos/learnhouse-v2/integration/recommendation_input.py) | 冻结画像快照，核对版本及 B 报告上下文 |
+| [demos/learnhouse-v2/integration/tests/test_recommendation_input.py](demos/learnhouse-v2/integration/tests/test_recommendation_input.py) | 画像接收、拒绝、哈希与目标查询测试 |
+| [demos/learnhouse-v2/integration/tests/test_recommendation_availability.py](demos/learnhouse-v2/integration/tests/test_recommendation_availability.py) | V2.1 作答授权、草稿续写和推荐执行门禁离线回归 |
+| [demos/learnhouse-v2/integration/recommendation_artifact.py](demos/learnhouse-v2/integration/recommendation_artifact.py) | 读取可信适配器产物并复核报告哈希 |
+| [demos/learnhouse-v2/upstream/learnhouse/apps/api/src/education/recommendation_mapping.py](demos/learnhouse-v2/upstream/learnhouse/apps/api/src/education/recommendation_mapping.py) | 按知识目标、发布版本、作业和学生权限匹配练习 |
+| [demos/learnhouse-v2/upstream/learnhouse/apps/api/src/education/recommendation_import.py](demos/learnhouse-v2/upstream/learnhouse/apps/api/src/education/recommendation_import.py) | 自动执行可用性门禁、既有任务事务导入、历史交接和失效复核 |
+| [demos/learnhouse-v2/upstream/learnhouse/apps/api/src/education/business.py](demos/learnhouse-v2/upstream/learnhouse/apps/api/src/education/business.py) | 按当前画像读取课程规则建议 |
+| [demos/learnhouse-v2/upstream/learnhouse/apps/api/src/education/business_routes.py](demos/learnhouse-v2/upstream/learnhouse/apps/api/src/education/business_routes.py) | 提供映射、导入、列表与版本化访问接口 |
+| [demos/learnhouse-v2/scripts/run_v2_api.py](demos/learnhouse-v2/scripts/run_v2_api.py) | 启动业务 API 并加载研究校验模块 |
+| [demos/learnhouse-v2/scripts/test_v2_demo.py](demos/learnhouse-v2/scripts/test_v2_demo.py) | 在教学业务流程中验证练习映射 |
+| [demos/learnhouse-v2/scripts/check_recommendation_mapping.py](demos/learnhouse-v2/scripts/check_recommendation_mapping.py) | 真实学生会话下验证映射、权限与版本 |
+| [demos/learnhouse-v2/scripts/check_recommendation_invalidation.py](demos/learnhouse-v2/scripts/check_recommendation_invalidation.py) | 验证改分、班级撤权和资源撤回后的旧入口 |
+| [demos/learnhouse-v2/scripts/check_recommendation_import.py](demos/learnhouse-v2/scripts/check_recommendation_import.py) | 在临时 PostgreSQL 中验收正式 B 导入 |
+| [demos/learnhouse-v2/integration/tests/recommendation_import/seed.sql](demos/learnhouse-v2/integration/tests/recommendation_import/seed.sql) | 隔离验收专用合成数据，由脚本加载 |
+| [demos/learnhouse-v2/upstream/learnhouse/apps/web/components/education/EducationApp.tsx](demos/learnhouse-v2/upstream/learnhouse/apps/web/components/education/EducationApp.tsx) | 显示推荐理由、画像版本、获准证据摘要与练习入口 |
+| [demos/learnhouse-v2/upstream/learnhouse/apps/web/components/education/api.ts](demos/learnhouse-v2/upstream/learnhouse/apps/web/components/education/api.ts) | 共享接口客户端、来源标签与失效提示 |
+#### 0. V2.1 离线回归
+
+以下命令均从仓库根目录运行。只用标准库和临时替身，不连接数据库、不调用模型、不执行学生代码：
+
+```bash
+python3.10 -B -m unittest discover -s demos/learnhouse-v2/integration/tests -p 'test_recommendation_*.py' -v
+```
+
+覆盖画像输入、作答窗口与授权配额、无调度器时拒绝新任务、保留既有任务回执。映射的 PostgreSQL 查询和真实登录仍需独立集成验收。
+
 #### 1. 验证练习映射与失效
 
 在已运行的合成 Demo 上执行。第一条为只读检查；出现 `SKIP` 表示缺少匹配练习。第二条会创建本次测试作业与成绩、临时调整测试学生的班级资格并撤回测试资源。
 
 ```bash
-python3 -B scripts/check_recommendation_mapping.py
-python3 -B scripts/check_recommendation_invalidation.py
+python3 -B demos/learnhouse-v2/scripts/check_recommendation_mapping.py
+python3 -B demos/learnhouse-v2/scripts/check_recommendation_invalidation.py
 ```
 
 通过时两条命令均输出 `OK`。在第二条命令打印的 `.runtime/invalidation-*.json` 中核对 `completed: true`、`failed: 0`。旧映射入口在画像更新、班级撤权和资源撤回后应分别返回 409、403、404。
@@ -290,7 +311,7 @@ uv run --no-project --isolated --python 3.12 \
   --with pgserver==0.1.4 --with 'psycopg[binary]==3.3.9' \
   --with sqlalchemy==2.0.58 --with sqlmodel==0.0.50 --with jsonschema \
   --with fastapi==0.141.1 --with httpx==0.28.1 \
-  python -B scripts/check_recommendation_import.py
+  python -B demos/learnhouse-v2/scripts/check_recommendation_import.py
 ```
 
-末行应显示“OK 正式 B 导入与失效的隔离验收通过”。脚本创建临时数据库，覆盖报告篡改、事务回滚、重复导入、版本替换、撤权及历史保留。日常 Demo 的学生账号不会因此获得测试推荐。
+末行应显示“OK 正式 B 导入与失效的隔离验收通过”。V2.1 中脚本先断言公共任务注册接口返回 503，再仅在它自建的临时数据库内创建导入测试任务；该数据准备不提供给普通用户，也不能作为生产调度实现。脚本创建临时数据库，覆盖报告篡改、事务回滚、重复导入、版本替换、撤权及历史保留。日常 Demo 的学生账号不会因此获得测试推荐。

@@ -14,6 +14,7 @@ EVENT_RECHECK_REQUESTED = 'recheck_requested'
 EVENT_RECHECK_RESOLVED = 'recheck_resolved'
 EVENT_ACCESS_GRANTED = 'access_granted'
 EVENT_ACCESS_REVOKED = 'access_revoked'
+EVENT_SUBMISSION_VOIDED = 'submission_voided'
 
 ALLOWED_EVENT_TYPES = {
     EVENT_SUBMISSION_RECEIVED,
@@ -24,6 +25,7 @@ ALLOWED_EVENT_TYPES = {
     EVENT_RECHECK_RESOLVED,
     EVENT_ACCESS_GRANTED,
     EVENT_ACCESS_REVOKED,
+    EVENT_SUBMISSION_VOIDED,
 }
 
 
@@ -32,7 +34,7 @@ def current_iso_timestamp():
 
 
 def validate_learning_event(event):
-    """Rigorous contract validation for learning events."""
+    """Check event structure and content hash, not caller identity or source authenticity."""
     if not isinstance(event, dict):
         raise ValueError('Learning event must be a dictionary')
     required_fields = ('event_id', 'event_type', 'student_id', 'course_id', 'timestamp', 'payload', 'provenance')
@@ -57,6 +59,10 @@ def validate_learning_event(event):
     for k in ('resource_id', 'version', 'operator_id'):
         if k in prov and (not isinstance(prov[k], (str, int)) or str(prov[k]).strip() == ''):
             raise ValueError(f'Invalid provenance value for {k}')
+    expected_hash = fingerprint([event[k] for k in (
+        'event_id', 'event_type', 'student_id', 'course_id', 'timestamp', 'payload', 'provenance')])
+    if event.get('event_sha256') != expected_hash:
+        raise ValueError('Event hash missing or content changed')
 
 
 def create_learning_event(event_type, student_id, course_id, payload, provenance, timestamp=None, event_id=None):
@@ -88,5 +94,5 @@ def filter_events_for_student(events, student_id, course_id=None):
             continue
         filtered.append(deepcopy(evt))
     # Sort chronologically by timestamp
-    filtered.sort(key=lambda e: e['timestamp'])
+    filtered.sort(key=lambda e: datetime.fromisoformat(e['timestamp'].replace('Z', '+00:00')))
     return filtered

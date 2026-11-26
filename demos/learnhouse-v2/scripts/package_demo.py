@@ -6,6 +6,8 @@ import subprocess
 import zipfile
 
 ROOT=Path(__file__).resolve().parents[1]
+if (ROOT.parent.parent / 'profiling').is_dir():
+    raise RuntimeError('V2.1 requires the complete repository. Use scripts/package_v21.py instead of the historical V2-only packager.')
 UP=ROOT/'upstream/learnhouse'
 OUT=ROOT/'教育智能体V2_本地Demo源码与交付包_2026-11-20.zip'
 BLOCK={'.git','.runtime','node_modules','.next','__pycache__','.venv','ee'}

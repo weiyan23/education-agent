@@ -13,7 +13,7 @@ from functools import wraps
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request, HTTPException
 from sqlalchemy.exc import DBAPIError
 from src.core.events.database import get_db_session
-from src.education.security import require_actor, require_course, require_admin, fail
+from src.education.security import require_actor, require_current_actor, require_course, require_admin, fail
 from src.education import recommendation_import as ri
 from src.education.recommendation_mapping import resolve_exercises
 from src.education import business as b
@@ -319,15 +319,20 @@ async def generate_research(course_id, request, actor, db, data, course, source,
         return await asyncio.to_thread(run_fixture_candidate, demo / '.runtime' / 'generation-fixtures',
                                        current_scope, student_id=student_id, requirement=data['requirement'], **common)
 
-    async def import_candidate(db, candidate):
-        resource = str(uuid4())
-        await current_policy(db,actor,course_id,data['policy_version_id'])
-        await require_course(db,actor,course_id,action='content.generate',student_id=data['target_student_id'])
+    async def authorize_generation(db):
+        active_actor = await require_current_actor(db, actor)
+        await current_policy(db,active_actor,course_id,data['policy_version_id'])
+        await require_course(db,active_actor,course_id,action='content.generate',student_id=data['target_student_id'])
         if not current_scope():
             fail('GENERATION_SCOPE_CHANGED',409,'生成配置已失效')
-        latest = await b.resource_version(db,actor,source['id'],'content.read')
+        latest = await b.resource_version(db,active_actor,source['id'],'content.read')
         if latest['content_hash'] != source['content_hash'] or latest['archived_at'] or latest['processing_state'] != 'ready':
             fail('SOURCE_NOT_READY',409,'生成期间资料状态已变化')
+        return active_actor
+
+    async def import_candidate(db, candidate):
+        active_actor = await authorize_generation(db)
+        resource = str(uuid4())
         version_ids = [str(uuid4()) for _ in candidate.versions]
         refs = {'task_id':task,'resource_id':resource,'resource_version_id':version_ids[-1]}
         await b.execute(db,'''UPDATE ea.task_run SET status='succeeded',lease_until=NULL,
@@ -338,7 +343,7 @@ async def generate_research(course_id, request, actor, db, data, course, source,
             id=resource,org=actor.org_id,course=course_id,actor=actor.principal_id,
             title=candidate.versions[-1].content['title'])
         for index, version in enumerate(candidate.versions):
-            await content_valid(db,actor,course_id,version.content,version.restricted)
+            await content_valid(db,active_actor,course_id,version.content,version.restricted)
             manifest = {'provenance':candidate.provenance,'model_called':not fixture,
                         'artifact_sha256':candidate.artifact_hash,'question_sha256':version.question_hash}
             await b.execute(db,'''INSERT INTO ea.resource_version
@@ -358,7 +363,7 @@ async def generate_research(course_id, request, actor, db, data, course, source,
 
     async def finish(db):
         try:
-            await require_course(db,actor,course_id,action='content.generate',student_id=data['target_student_id'])
+            await authorize_generation(db)
             state = await b.one(db,'SELECT status FROM ea.task_run WHERE id=:id',id=task)
             await db.rollback()
             if state['status'] != 'running':
@@ -763,9 +768,10 @@ async def open_decision_exercise(course_id:int, student_id:int, version_id:UUID,
     view = await ri.read_decision(db, actor, course_id, student_id, version_id)
     if view['state'] == 'stale':
         fail('STALE_EVIDENCE', 409)
-    if not any(i['binding_id'] == str(binding_id) for i in view['items']):
+    item = next((i for i in view['items'] if i['binding_id'] == str(binding_id)), None)
+    if item is None:
         fail('EXERCISE_UNAVAILABLE', 404)
-    return await b.get_binding(db, actor, binding_id)
+    return {**await b.get_binding(db, actor, binding_id), 'start_option': item['start_option']}
 
 
 @router.get('/courses/{course_id}/recommendation-exercises')
@@ -790,7 +796,7 @@ async def open_exercise_match(course_id: int, binding_id: UUID, resource_version
     if (item['resource_version_id'] != str(resource_version_id)
             or item['publication_event_id'] != str(publication_event_id)):
         fail('EXERCISE_VERSION_CHANGED', 409)
-    return await b.get_binding(db, actor, binding_id)
+    return {**await b.get_binding(db, actor, binding_id), 'start_option': item['start_option']}
 
 
 @router.get('/evidence/{evidence_id}/content')

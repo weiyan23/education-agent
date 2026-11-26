@@ -1,6 +1,5 @@
 """Persist trusted B decisions and resolve their frozen exercise set under live scopes."""
 import os
-import re
 import sqlite3
 from uuid import uuid4
 
@@ -49,27 +48,14 @@ async def evidence_scope(db, profile):
 
 
 async def register(db, actor, course, student, expected, request):
-    profile = await current_profile(db, actor, course, student)
-    if not profile or profile['method_kind'] != 'research_prototype':
-        fail('RESEARCH_PROFILE_REQUIRED', 409)
-    if str(profile['id']) != str(expected):
-        fail('STALE_PROFILE', 409)
-    link = profile['research_fields'].get('recommendation_input', {})
-    digest = link.get('profile_sha256', '')
-    if (profile['capability_status'] not in {'connected','unvalidated'}
-            or not isinstance(digest, str) or not re.fullmatch('[0-9a-f]{64}', digest)):
-        fail('PROFILE_ARTIFACT_REQUIRED', 409)
-    refs = {'student_id': student, 'profile_version_id': str(expected),
-            'version': profile['version'], 'profile_sha256': digest}
-    async def change():
-        task = str(uuid4())
-        await b.execute(db, """INSERT INTO ea.task_run(id,org_id,course_id,requested_by,operation,
-            idempotency_key,input_hash,input_refs,max_attempts) VALUES
-            (:task,:org,:course,:actor,'recommend',:key,:hash,CAST(:refs AS jsonb),1)""",
-            task=task, org=actor.org_id, course=course, actor=actor.principal_id,
-            key=request.headers['idempotency-key'], hash=b.digest(refs), refs=b.canonical(refs))
-        return {'task_id': task, **refs}
-    return await b.write_once(db, actor, request, 'recommendation.register', refs, course, change)
+    # V2.1 has no production recommendation dispatcher. Never create a queued
+    # job merely because a profile exists; reading/importing existing trusted
+    # results remains available through its separate, fully checked endpoints.
+    if actor.role != 'student' or actor.user_id != student:
+        fail('SCOPE_DENIED', 403)
+    await require_course(db, actor, course, student_id=student)
+    fail('RECOMMENDATION_EXECUTION_UNAVAILABLE', 503,
+         '本阶段尚未接通自动推荐调度；可查看已有推荐，或由服务端导入已验证任务产物。')
 
 
 async def live_matches(db, actor, course, concepts, profile_id, *, lock):

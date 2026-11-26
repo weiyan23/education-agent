@@ -1,0 +1,17 @@
+{
+  "passed": 10,
+  "checks": [
+    "teacher_preview_synthetic_notice",
+    "three_scenarios_match_actual_python_output",
+    "generation_navigation",
+    "mobile_no_horizontal_overflow",
+    "preview_failure_retry",
+    "student_preview_blocked_in_ui",
+    "recommendation_uses_refreshed_grant",
+    "normal_attempt_ignores_unrelated_grant",
+    "admin_synthetic_preview",
+    "no_browser_page_errors"
+  ],
+  "scope": "Next.js browser with synthetic API responses; no real login/database/model",
+  "page_errors": []
+}

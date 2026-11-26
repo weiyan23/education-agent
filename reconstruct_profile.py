@@ -7,16 +7,18 @@ from profiling.api_client import CachedChatClient, read_env, send_chat, model_co
 from profiling.run_store import RunStore, RecordedTransport, fingerprint, atomic_json
 from profiling.student_profile import PROMPT_VERSION
 from profiling.reconstruction import reconstruct_profile
+from profiling.events import create_learning_event, validate_learning_event
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--base-profile', type=Path, required=True)
     parser.add_argument('--catalog', type=Path, default=Path('config/java-basics.json'))
+    parser.add_argument('--course-id', help='Explicit local scope for a legacy profile without course_id; not authorization')
     parser.add_argument('--correction-event', type=Path, help='Path to LearningEvent JSON')
     parser.add_argument('--revoke-record-id', type=str, help='Specific record_id to revoke')
-    parser.add_argument('--reason', type=str, default='teacher_grade_revision')
-    parser.add_argument('--operator-id', type=str, default='teacher_01')
+    parser.add_argument('--reason', type=str, default='explicit_reconstruction')
+    parser.add_argument('--operator-id', type=str, default='local-unverified')
     parser.add_argument('--env-file', type=Path, default=Path('.env'))
     parser.add_argument('--output', type=Path, default=Path('runs/profile-reconstruction-001'))
     parser.add_argument('--cache', type=Path, default=Path('cache/profile-reconstruction'))
@@ -37,16 +39,34 @@ def main():
 
     base = json.loads(args.base_profile.read_text(encoding='utf-8-sig'))
     catalog = json.loads(args.catalog.read_text(encoding='utf-8-sig'))
+    if args.course_id:
+        if base.get('course_id') not in (None, args.course_id):
+            parser.error('Course differs from the saved profile')
+        base['course_id'] = args.course_id
+    if args.correction_event and args.revoke_record_id:
+        parser.error('Choose correction-event or revoke-record-id, not both')
 
     correction = None
     if args.correction_event:
         correction = json.loads(args.correction_event.read_text(encoding='utf-8-sig'))
     elif args.revoke_record_id:
-        correction = {
-            'event_type': 'grade_revised',
-            'payload': {'record_id': args.revoke_record_id, 'reason': args.reason},
-            'provenance': {'operator_id': args.operator_id}
-        }
+        if not base.get('course_id'):
+            parser.error('A bound course_id is required; supply --course-id for a legacy local profile')
+        payload = {'record_id': args.revoke_record_id, 'reason': args.reason}
+        provenance = {'operator_id': args.operator_id, 'source_verification': 'local_unverified'}
+        previous = None
+        if args.resume:
+            previous = json.loads((args.output / 'correction-event.json').read_text(encoding='utf-8'))
+            validate_learning_event(previous)
+        correction = create_learning_event(
+            'submission_voided', base['student_id'], base['course_id'], payload, provenance,
+            timestamp=previous['timestamp'] if previous else None,
+            event_id='evt_local_' + fingerprint([base, payload, provenance]))
+    if correction:
+        validate_learning_event(correction)
+        if (correction['student_id'] != base.get('student_id')
+                or correction['course_id'] != base.get('course_id')):
+            parser.error('Correction requires the same bound student and course as the base profile')
 
     if args.output.resolve() == args.base_profile.resolve().parent:
         parser.error('Use a separate output directory; preserve the base profile')
@@ -88,6 +108,8 @@ def main():
         'prompt_version': PROMPT_VERSION,
         'model': client.model,
         'stage_models': client.stage_models,
+        'url': client.url, 'max_tokens': client.max_tokens, 'timeout': client.timeout,
+        'reason': args.reason, 'operator_id': args.operator_id,
         'code': {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
     }
 
@@ -95,6 +117,8 @@ def main():
         client.transport = RecordedTransport(store, send_chat)
         client.event_sink = store.api_event
         atomic_json(args.output / 'base-profile-snapshot.json', base)
+        if correction:
+            atomic_json(args.output / 'correction-event.json', correction)
         report = reconstruct_profile(
             store, client, base, catalog,
             correction_event=correction,
@@ -107,6 +131,8 @@ def main():
             'failed_steps': report['failed_steps'],
             'active_evidence_count': report['revision'].get('active_evidence_count', 0)
         }, ensure_ascii=False, indent=2))
+        if report['status'] == 'partial':
+            raise RuntimeError('Reconstruction partial; inspect status/trace. No active replacement was published')
 
 
 if __name__ == '__main__':

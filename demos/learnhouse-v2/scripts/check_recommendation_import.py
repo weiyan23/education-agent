@@ -109,8 +109,21 @@ def verify(db, client, private, actor, sample):
             assert value['detail']['code'] == code, value
         return value
     def register(profile_id):
-        return call('POST', base+'/jobs', params={'profile_version_id': str(profile_id)},
-                    headers={'Idempotency-Key': str(uuid4())})
+        # V2.1 deliberately has no dispatcher: the public endpoint must not
+        # enqueue forever. Only this isolated DB fixture creates import jobs.
+        call('POST', base+'/jobs', 503, 'RECOMMENDATION_EXECUTION_UNAVAILABLE',
+             params={'profile_version_id': str(profile_id)},
+             headers={'Idempotency-Key': str(uuid4())})
+        version = db.execute('SELECT version FROM ea.profile_version WHERE id=%s',
+                             (profile_id,)).fetchone()[0]
+        refs = {'student_id': 2, 'profile_version_id': str(profile_id),
+                'version': version, 'profile_sha256': fingerprint(sample.profile)}
+        task_id = str(uuid4())
+        db.execute("""INSERT INTO ea.task_run(id,org_id,course_id,requested_by,operation,
+            idempotency_key,input_hash,input_refs,max_attempts)
+            VALUES(%s,1,10,%s,'recommend',%s,%s,%s,1)""",
+            (task_id, actor, str(uuid4()), fingerprint(refs), json.dumps(refs)))
+        return {'task_id': task_id, **refs}
     def upload(task, status=200, code=None):
         return call('POST', base+'/jobs/'+task['task_id']+'/import', status, code)
     def profile_version(previous=None):

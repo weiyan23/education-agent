@@ -41,6 +41,7 @@ import {
   buttonClass,
 } from '@/design'
 import { api, ApiError, RecordData as D, items, date, label } from './api'
+import ResearchPreview from './ResearchPreview'
 import './education.css'
 
 const base = '/education'
@@ -431,6 +432,7 @@ export default function EducationApp() {
           ['/policies', '教学策略', GearSix],
           ['/operations', '任务与能力', ListChecks],
           ['/audit', '操作记录', ClipboardText],
+          ['/integration', '本版功能', Info],
         ]
       : actualRole === 'teacher'
         ? [
@@ -451,6 +453,7 @@ export default function EducationApp() {
               '学生学习状态',
               ChartLineUp,
             ],
+            ['/integration', '本版功能', Info],
           ]
         : [
             ['', '学习首页', House],
@@ -533,7 +536,7 @@ export default function EducationApp() {
             <span>有依据的教与学</span>
           </p>
           <div className="edu-inline">
-            <StatusPill status="neutral">本地演示</StatusPill>
+            <StatusPill status="neutral">V2.1 阶段集成</StatusPill>
             <Button variant="ghost" size="sm" onClick={logout}>
               退出
             </Button>
@@ -559,7 +562,7 @@ export default function EducationApp() {
           )}
         </div>
         <footer className="edu-footer">
-          知学 · 教育智能体 V2　/　课程数据按账号授权展示
+          知学 · 教育智能体 V2.1　/　课程数据按账号授权展示
         </footer>
       </main>
       {toast && (
@@ -584,6 +587,10 @@ function Workspace(props: WorkspaceProps) {
     id = parts[2],
     tab = parts[3] || 'overview'
   if (sub === 'account') return <Account session={session} />
+  if (sub === 'integration')
+    return role === 'teacher' || role === 'admin'
+      ? <ResearchPreview role={role} courseId={items(courses.data)[0]?.id} />
+      : <Notice error>当前账号没有访问此演示页面的权限。</Notice>
   if (role === 'admin')
     return (
       <Admin section={sub || 'overview'} notify={notify} session={session} />
@@ -780,7 +787,9 @@ function Home({
               />
             )}
             <Notice>
-              本地演示使用独立演示数据。模型研究能力尚未接通；课程流程和评分记录可以实际操作。
+              {role === 'teacher'
+                ? 'V2.1 已接入练习生成入口与合成时序预览，具体生成方式按课程配置开放。可在“本版功能”查看接入范围。'
+                : '课程流程和评分记录可以实际操作。暂无有效研究推荐时，学习建议仍来自课程规则。'}
             </Notice>
           </>
         )}
@@ -1327,7 +1336,9 @@ function Generator({
           结果由规则产生，不调用语言模型。生成后仍需完成内容检查和班级发布。
         </p>
         <Notice>
-          多智能体研究生成尚未接通。本版不会把规则题目标记为 AI 生成。
+          {executeCapability || fixtureCapability
+            ? '生成的内容先保存为候选，需要教师复核后发布；合成样例会单独标注。'
+            : '当前课程提供规则模板；模型生成未配置，规则练习不标记为 AI 生成。'}
         </Notice>
       </Panel>
     </div>
@@ -1846,7 +1857,13 @@ function Binding({
     setError('')
     try {
       const d = source ? await api(source) : displayed
-      const draft = d.recipient?.attempts?.find((a: D) => a.status === 'draft')
+      const option = source ? d.start_option : null
+      if (source && (!option || !['normal', 'grant', 'resume'].includes(option.kind)))
+        throw new Error('推荐练习的作答资格已变化，请返回课程刷新。')
+      const draft = d.recipient?.attempts?.find((a: D) =>
+        a.status === 'draft' && (!source || (option.kind === 'resume' && a.id === option.attempt_id)))
+      if (source && option.kind === 'resume' && !draft)
+        throw new Error('草稿状态已变化，请返回课程刷新。')
       if (draft) {
         router.push(pathFor('student', `/attempts/${draft.id}`))
         return
@@ -1856,7 +1873,9 @@ function Binding({
         etag: d.etag,
         body: {
           recipient_id: d.recipient.id,
-          resubmission_grant_id: d.recipient.active_grants?.[0]?.id || null,
+          resubmission_grant_id: source
+            ? option.resubmission_grant_id
+            : d.recipient.active_grants?.[0]?.id || null,
         },
       })
       router.push(pathFor('student', `/attempts/${a.id}`))
@@ -2473,7 +2492,7 @@ function Submission({
                   <Tag value={d.pipeline.profile} />
                 </div>
                 <Notice>
-                  本版展示课程规则统计；动态学习画像与个性化推荐研究能力尚未接通。
+                  当前评分更新课程统计；真实事件驱动的研究画像和自动推荐仍待联调。
                 </Notice>
                 <Link
                   className={buttonClass('secondary')}

@@ -1,108 +1,64 @@
-# 研究内容二：基于实时学情与动态行为序列的学生画像
+# 研究内容二：学生画像与行为序列 · V2.1 阶段交付
 
-## 1. 模块定位与核心功能
-本模块负责教育智能体系统中的**研究内容二**，核心功能是**“根据用户学习事件与多源证据生成、更正并输出学生画像”**。
+更新：2026-11-26。本说明以 V2.1 修复后的代码为准，详细字段见 [接口与契约](docs/research-content-2-contract.md)。
 
-### 核心特性
-1. **多源证据接入（Evidence Ingestion）**：统一 Java 代码作答、客观题选择、教师人工评分与工具执行观测的证据格式，严格隔离真实证据与模拟数据。
-2. **学习事件流（Learning Events）**：追踪全生命周期的 8 类学习事件（提交、自动批阅、教师改分、复核、入班/撤权等）。
-3. **改分与撤权失效重建（Invalidate & Rebuild）**：改变传统“只增量追加不纠错”的弊端。当发生改分或撤权时，标记旧画像失效并阻断下游推荐，基于纯净有效证据集显式重建新基线。
-4. **动态行为时序轨迹（Dynamic Sequence Modeling）**：捕捉学生的连续行为时序（阅读、草稿、耗时、试错、订正），推断知识点定性演变趋势（`improving`/`regressing`/`stable`/`fluctuating`），绝无虚假概率。
-5. **上下游交接与权限控制**：
-   - 向**自适应学习推荐（模块 C）**交付具备版本指纹的有效画像（失效时自动阻断推题）；
-   - 向**序列教学质量评估（模块 D）**交付带来源哈希的有效证据引用；
-   - 为**学生端 S08（我的学习状态）**与**教师端 T11（班级学情）**提供脱敏且遵循 P15 权限的视图数据。
+**当前交付是根研究包、CLI 和离线回归。** 已修复改分重建、课程撤权、输出有效性和模拟数据边界；尚未完成真实事件消费、LearnHouse 画像版本落库、S08/T11 页面与受认证接口。数据格式化函数不是权限服务，合成序列不是研究效果验证。
 
----
+## 已完成的范围
 
-## 2. 代码与测试文件清单
+| 文件 | V2.1 实现 |
+|---|---|
+| `profiling/events.py` | 9 类事件枚举、结构与内容哈希检查、学生/课程过滤、带时区排序；包括新增 `submission_voided` |
+| `profiling/evidence.py` | 证据类型与评分字段校验、有效性检查；新 live 证据携带 `submitted_at`，未知值保留 null |
+| `profiling/reconstruction.py` | 显式重建；有效证据进入 `evidence`，旧修订留在 `evidence_history`；保留失效画像和事件指纹，支持本地检查点恢复 |
+| `profiling/sequence.py`、`synthetic_sequence.py` | 3 组合成序列的规则演示；真实/未标来源 JSON 只产生未验证行为摘要 |
+| `profiling/adapter.py` | 本地推荐/评估导出及 S08/T11 数据格式化；不提供 HTTP 鉴权或权威来源认证 |
+| `reconstruct_profile.py`、`run_sequence.py`、`webapp/commands.py` | CLI 及旧本地工作台命令；默认预览，显式执行才落盘 |
+| `tests/test_research_two.py`、`tests/test_profiling_integration.py` | 11 项基础样例、22 项边界与跨原推荐/CLI 回归 |
 
-### A. 核心实现代码文件
-* `profiling/events.py` **[新增]**：统一学习事件契约，定义 `LearningEvent`、`create_learning_event()`、8 种核心事件类型及范围过滤。
-* `profiling/evidence.py` **[增强]**：扩展多源证据模型，提供 `create_evidence_packet()`、支持多题型 `evidence_kind`、有效评分 `effective_grade`、生命周期状态 `lifecycle_status` 及作废函数 `invalidate_evidence()`。
-* `profiling/reconstruction.py` **[新增]**：画像失效与显式重建算法，实现 `invalidate_profile()`、`rebuild_profile()`、`reconstruct_profile()`。
-* `profiling/sequence.py` **[新增]**：动态行为序列规范与轨迹评估器，包含 Schema `dynamic-learning-sequence-input-v1` / `output-v1` 及 `compute_sequence_trajectories()`。
-* `profiling/synthetic_sequence.py` **[新增]**：3 种典型教学时序场景生成器（常规递进掌握、持续试错误解、改分订正恢复），显式打标 `synthetic_demo_data`。
-* `profiling/adapter.py` **[新增]**：上下游交付与页面适配层，包含 `export_profile_for_recommendation()`、`export_evidence_for_evaluation()`、`get_learning_state_for_s08()`、`get_class_learning_summary_for_t11()`。
-* `profiling/__init__.py` **[增强]**：使用 Python 惰性加载机制对外导出核心 API，避免与外部生成模块产生循环导入。
+新增 `evidence_kind` 枚举不代表多题型画像算法已完成。原 `StudentProfile` 仍主要分析 Java 作答；教师评分目前参与有效性及修订记录，尚未成为新的多源认知模型。
 
-### B. 独立 CLI 命令行入口
-* `reconstruct_profile.py` **[新增]**：显式画像重建命令行工具，支持 `--base-profile`、`--revoke-record-id`、`--reason` 与预览/执行模式。
-* `run_sequence.py` **[新增]**：时序分析与生成命令行工具，支持 `--generate-synthetic` 与 `--sequence-file` 轨迹解析。
-* `webapp/commands.py` **[增强]**：将 `reconstruct` 与 `sequence` 两个命令注册进本地 Web 工作台调度元数据。
+## 运行与验证
 
-### C. 自动化测试文件
-* `tests/test_research_two.py` **[新增]**：针对本模块的完整单元与集成测试套件，覆盖事件流、评分校验、失效重建、时序轨迹推断及适配器鉴权。
+在仓库根目录运行，以下合成序列命令不调用模型：
 
-### D. 数据与契约规范文档
-* `docs/research-content-2-contract.md` **[新增]**：详细的接口字段定义、时序 Schema、生命周期状态机及上下游交接规范。
-* `README_RESEARCH_TWO.md` **[新增]**：本说明文档。
-
----
-
-## 3. 运行与测试说明
-
-### 3.1 运行本模块自动化测试
-在项目根目录运行：
 ```bash
-python -m unittest tests.test_research_two
-```
-**预期输出**：
-```text
-...........
-----------------------------------------------------------------------
-Ran 11 tests in 0.002s
+# 仅预览，不生成文件
+python run_sequence.py --generate-synthetic
 
-OK
+# 显式保存 3 组模拟数据至 runs/synthetic-sequences/
+python run_sequence.py --generate-synthetic --execute
+
+# 仅预览分析；追加 --execute 才写出 runs/sequence-demo/sequence.json
+python run_sequence.py --sequence-file runs/synthetic-sequences/scenario_1_seq_synth_prog_student_synth_01.json --output runs/sequence-demo
 ```
 
-### 3.2 运行系统全量回归测试（验证 0 回归）
+画像作废/重建默认预览，不读取模型配置：
+
 ```bash
-python -m unittest discover tests
-```
-**预期输出**：
-```text
-Ran 200 tests in ~24s
-
-OK (skipped=3)
+python reconstruct_profile.py --base-profile runs/sample/profile.json --course-id java_basics --revoke-record-id e1 --reason "本地作答作废验证"
 ```
 
-### 3.3 命令行运行动态时序生成与轨迹分析
-1. 生成 3 组标准合成时序数据集：
-   ```bash
-   python run_sequence.py --generate-synthetic
-   ```
-   产物输出至：`runs/synthetic-sequences/`
-2. 分析场景一（常规递进掌握）并输出轨迹报告：
-   ```bash
-   python run_sequence.py --sequence-file "runs/synthetic-sequences/scenario_1_seq_synth_prog_student_synth_01.json" --output "runs/test_seq_out.json"
-   ```
+`--revoke-record-id` 生成 `submission_voided` 事件；改分使用 `--correction-event` 提供含有效 `revised_grade` 的完整事件。课程须与原画像一致；旧画像缺少 `course_id` 时可用 `--course-id` 显式绑定本地范围，这不代表在线授权。默认操作人是 `local-unverified`。重建 `--execute` 可能调用模型，须按项目预算与执行约束使用；输出目录须与旧画像目录分开。
 
-### 3.4 命令行测试画像改分失效与重建（安全预览）
+本轮实测命令：
+
 ```bash
-python reconstruct_profile.py --base-profile "runs/sample_base_profile.json" --revoke-record-id "e1" --reason "T10教师改分作废"
+PYTHONPATH=tests PYTHONDONTWRITEBYTECODE=1 python -B -m unittest test_profiling_integration test_research_two test_recommendation test_student_profile test_profile_update
 ```
 
----
+2026-11-26 在 Python 3.10 下 **59 项通过**（22 + 11 + 13 + 8 + 5）。使用模型桩和临时目录，覆盖“live 证据→画像→改分→原推荐 `prepare_context`”、撤权、导出边界、CLI 与恢复；没有连接真实模型、执行 Java 或操作业务数据库。
 
-## 4. 模块交付与下游对接规范
+## 下游交接要点
 
-### 4.1 对接接口摘要
-* **自适应学习推荐（模块 C - 盛瑞轩）**：
-  * 调用接口：`export_profile_for_recommendation(profile, student_id, course_id)`
-  * 交付保障：画像失效时（`is_active == false`）自动阻断推荐推题，向 C 端返回受限原因；仅向 C 端提供包含完整版本指纹、来源哈希与有效证据计数的画像。
-* **序列教学质量评估（模块 D）**：
-  * 调用接口：`export_evidence_for_evaluation(profile, events, student_id)`
-  * 交付保障：下发当前有效状态的全部证据清单及来源哈希引用，确保评估基于不可篡改的证据链。
-* **前端展示页面（S08 / T11）**：
-  * S08（我的学习状态）：调用 `get_learning_state_for_s08()`，输出知识点定性状态（良好/需巩固/待评估/无观察）与脱敏后的证据抽屉信息。
-  * T11（班级学情与学生详情）：调用 `get_class_learning_summary_for_t11()`，严格执行班级成员与 P15 权限边界隔离。
+- **推荐导出**：只接受 completed 且有效的画像；partial/failed/失效/撤权结果不可用于当前推荐。传入课程必须等于画像绑定课程。返回 completed 状态及完整当前 `evidence`、`observations`、`summaries`，可被原根 `prepare_context` 消费；指纹不是数据库 `profile_version_id`。
+- **来源状态**：推荐及评估导出显式返回 `integrity_verified=false`、`source_verification_status=unverified_local_input`。结构、范围和哈希检查不证明身份或权威来源；本地 `is_eligible_for_recommendation` 不能替代新版数据库版本校验和在线授权。
+- **撤权与历史**：课程撤权使本地结果 inactive/invalidated，禁止自动重新激活；历史证据单独保留。函数不会自动修改在线数据库中的旧版本或权限。
+- **S08/T11**：S08 保留逐项观察与计数，使用“有观察记录”而非票数推断总体掌握；失效画像不返回旧卡片。T11 的名单必须由调用方先授权；当前函数本身不完成教师身份、班级归属或 P15 鉴权。
+- **合成演示**：输出明确携带 `synthetic_demo_data`、`is_synthetic=true`、`learning_evidence_eligible=false`；`temporal_confidence=none`，单点趋势为 `insufficient_data`。只可称模拟结果变化，不能声称真实掌握提升。
 
-### 4.2 核心验收标准达成核对
-1. **旧画像不被覆盖，失效结果不能作为当前有效结果**：
-   * 改分或撤权时，旧画像只读归档并标记 `is_active: false`，记录 `invalidation` 审计原因；
-   * 重建过程基于纯净的有效证据子集生成带有 `supersedes_profile_sha256` 的新基线，旧版本与新版本隔离存储。
-2. **未知状态不能伪造成掌握概率，模拟数据不能进入真实证据集**：
-   * 知识点状态坚守 `Good / Bad / Unknown / no_observation` 四态定性边界，绝不输出虚假掌握概率百分比；
-   * 底层证据接入层校验强行拦截非真实作答，合成仿真序列显式打标 `synthetic_demo_data`，物理阻断进入真实训练/评测集。
+下一阶段需接入真实事件与版本存储、完成页面/API 权限闭环，和 C/D 统一版本及有效证据契约，再验证多源画像、真实时序模型和研究效果。
 
+## 历史提交记录
+
+原作者记录为“200 项，`OK (skipped=3)`，其中新增 11 项”。这是修复前的历史自测记录，不等于 200 项全部执行通过，也不能证明完整功能或零回归。V2.1 本模块复核范围以以上 59 项和实际接线边界为准。

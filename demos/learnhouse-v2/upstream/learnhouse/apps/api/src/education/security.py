@@ -42,6 +42,27 @@ async def require_actor(request: Request, db: AsyncSession = Depends(get_db_sess
       WHERE p.kind='human' AND p.user_id=:uid AND o.slug=:slug
       FOR SHARE OF p,uo
     '''), {'uid': user.id, 'slug': os.getenv('EA_ORG_SLUG', 'default')})).mappings().first()
+    return await _actor_from_row(db, row)
+
+
+async def require_current_actor(db, actor: Actor) -> Actor:
+    """Reload a retained worker identity; a previous HTTP session is not authority.
+
+    Keep identity and membership row locks until the caller ends its transaction.
+    In particular, candidate import must commit while these checks still hold.
+    """
+    row = (await db.execute(text('''
+      SELECT p.id,p.org_id,p.disabled_at,u.id AS user_id,u.username,u.email,
+             u.is_superadmin,uo.role_id
+      FROM ea.principal p JOIN public."user" u ON u.id=p.user_id
+      JOIN public.userorganization uo ON uo.org_id=p.org_id AND uo.user_id=p.user_id
+      WHERE p.kind='human' AND p.id=CAST(:p AS uuid) AND p.org_id=:o AND p.user_id=:u
+      FOR SHARE OF p,uo,u
+    '''), {'p': actor.principal_id, 'o': actor.org_id, 'u': actor.user_id})).mappings().first()
+    return await _actor_from_row(db, row)
+
+
+async def _actor_from_row(db, row) -> Actor:
     if not row or row['disabled_at']:
         fail('PRINCIPAL_DISABLED_OR_UNASSIGNED', 403)
     if row['is_superadmin'] or row['role_id'] in (1, 2):

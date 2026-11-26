@@ -1,4 +1,4 @@
-"""Comprehensive test suite for Research Content 2 (Profiling, Events, Invalidation, Sequence Modeling)."""
+"""Basic local examples for Research Content 2; integration boundaries have separate regressions."""
 import unittest
 from datetime import datetime, timezone
 from profiling.events import (
@@ -113,12 +113,14 @@ class TestEvidenceExtensions(unittest.TestCase):
 class TestProfileInvalidationAndReconstruction(unittest.TestCase):
     def setUp(self):
         self.catalog = {
+            'version': 'test-v1',
             'concepts': {'java.branch': '分支结构', 'java.loop': '循环结构'},
-            'prerequisites': {},
-            'relations': {}
+            'prerequisites': [],
+            'associations': []
         }
         self.base_profile = {
             'student_id': 's1',
+            'course_id': 'java_basics',
             'model_id': 'dummy-model',
             'prompt_version': 'embracing-adapted-v4-execution-evidence',
             'concepts': self.catalog['concepts'],
@@ -156,11 +158,8 @@ class TestProfileInvalidationAndReconstruction(unittest.TestCase):
 
     def test_reconstruct_profile_empty_when_all_revoked(self):
         client = DummyClient()
-        correction = {
-            'event_type': 'grade_revised',
-            'payload': {'record_id': 'rec_01', 'reason': '作弊清零'},
-            'provenance': {'operator_id': 'teacher_01'}
-        }
+        correction = create_learning_event('submission_voided', 's1', 'java_basics',
+            {'record_id': 'rec_01', 'reason': '作答作废'}, {'operator_id': 'teacher_01'})
         result = reconstruct_profile(None, client, self.base_profile, self.catalog,
                                      correction_event=correction, reason='清零重构')
         self.assertEqual(result['status'], 'completed')
@@ -211,7 +210,7 @@ class TestAdaptersAndHandoffs(unittest.TestCase):
             'summaries': {
                 'java.branch': {
                     'evaluation': '良好',
-                    'counts': {'Good': 2, 'Bad': 0},
+                    'counts': {'Good': 1},
                     'evidence_ids': ['rec_01'],
                     'kind': 'model_inference'
                 }
@@ -221,10 +220,14 @@ class TestAdaptersAndHandoffs(unittest.TestCase):
                     'record_id': 'rec_01',
                     'student_id': 's1',
                     'problem_id': 'p1',
+                    'question': '判断分支', 'program': 'if (x > 0) return 1;',
+                    'source': {'file': 'test-only.json', 'index': 0},
                     'split': 'train',
                     'lifecycle_status': 'active'
                 }
             ],
+            'observations': [{'concept_id': 'java.branch', 'status': 'Good', 'description': '本次代码的分支表现',
+                              'evidence_id': 'rec_01', 'student_id': 's1', 'kind': 'model_inference'}],
             'is_active': True,
             'status': 'completed'
         }
@@ -238,14 +241,14 @@ class TestAdaptersAndHandoffs(unittest.TestCase):
     def test_export_for_recommendation_success(self):
         delivered = export_profile_for_recommendation(self.active_profile, 's1')
         self.assertTrue(delivered['is_eligible_for_recommendation'])
-        self.assertEqual(delivered['status'], 'active')
+        self.assertEqual(delivered['status'], 'completed')
         self.assertTrue('profile_fingerprint' in delivered)
 
     def test_s08_and_t11_views(self):
         s08 = get_learning_state_for_s08(self.active_profile, 's1', 'java_basics')
         self.assertEqual(s08['student_id'], 's1')
         self.assertEqual(len(s08['concept_cards']), 1)
-        self.assertEqual(s08['concept_cards'][0]['status'], 'Good')
+        self.assertEqual(s08['concept_cards'][0]['status'], 'observed')
 
         t11 = get_class_learning_summary_for_t11({'s1': self.active_profile}, 'class_01', ['s1', 's2'])
         self.assertEqual(t11['class_id'], 'class_01')

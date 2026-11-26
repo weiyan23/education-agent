@@ -1,0 +1,83 @@
+{
+  "release": "V2.1 stage integration",
+  "date": "2026-11-26",
+  "source_branches": {
+    "baseline": "7fda4a4",
+    "generation": "a822287",
+    "profiling": "252e15d",
+    "recommendation": "e7f3926"
+  },
+  "research_regression": {
+    "passed": 71,
+    "failed": 0,
+    "command": "PYTHONPATH=tests /usr/bin/python3.10 -B -m unittest test_profiling_integration test_research_two test_recommendation test_student_profile test_profile_update test_generation -q",
+    "scope": "offline local model doubles, temporary artifacts and CLI; no real model/Java"
+  },
+  "integration_regression": {
+    "passed": 89,
+    "failed": 0,
+    "command": "<existing API venv>/bin/python -B -m unittest discover -s demos/learnhouse-v2/integration/tests -p test_*.py -q",
+    "scope": "offline adapter tests, AST-isolated actual route functions, ASGI preview with test identity; no application database"
+  },
+  "browser": {
+    "passed": 10,
+    "checks": [
+      "teacher_preview_synthetic_notice",
+      "three_scenarios_match_actual_python_output",
+      "generation_navigation",
+      "mobile_no_horizontal_overflow",
+      "preview_failure_retry",
+      "student_preview_blocked_in_ui",
+      "recommendation_uses_refreshed_grant",
+      "normal_attempt_ignores_unrelated_grant",
+      "admin_synthetic_preview",
+      "no_browser_page_errors"
+    ],
+    "scope": "Next.js browser with synthetic API responses; no real login/database/model",
+    "page_errors": []
+  },
+  "syntax": {
+    "status": "pass",
+    "files": [
+      "demos/learnhouse-v2/integration/research_preview.py",
+      "demos/learnhouse-v2/integration/tests/test_generation_authorization.py",
+      "demos/learnhouse-v2/integration/tests/test_recommendation_availability.py",
+      "demos/learnhouse-v2/integration/tests/test_research_preview.py",
+      "demos/learnhouse-v2/scripts/check_recommendation_import.py",
+      "demos/learnhouse-v2/scripts/package_demo.py",
+      "demos/learnhouse-v2/scripts/package_v21.py",
+      "demos/learnhouse-v2/upstream/learnhouse/apps/api/src/education/business_routes.py",
+      "demos/learnhouse-v2/upstream/learnhouse/apps/api/src/education/preview_routes.py",
+      "demos/learnhouse-v2/upstream/learnhouse/apps/api/src/education/recommendation_import.py",
+      "demos/learnhouse-v2/upstream/learnhouse/apps/api/src/education/recommendation_mapping.py",
+      "demos/learnhouse-v2/upstream/learnhouse/apps/api/src/education/router.py",
+      "demos/learnhouse-v2/upstream/learnhouse/apps/api/src/education/security.py",
+      "profiling/adapter.py",
+      "profiling/events.py",
+      "profiling/evidence.py",
+      "profiling/reconstruction.py",
+      "profiling/sequence.py",
+      "profiling/synthetic_sequence.py",
+      "reconstruct_profile.py",
+      "run_sequence.py",
+      "tests/test_profiling_integration.py",
+      "tests/test_research_two.py",
+      "webapp/commands.py"
+    ]
+  },
+  "diff_whitespace": "pass",
+  "not_run": [
+    "full production build",
+    "real Cookie and database end-to-end",
+    "PostgreSQL constraints and concurrent authorization changes",
+    "live model invocation",
+    "student Java execution",
+    "research-effect experiment"
+  ],
+  "environment": {
+    "frontend": "isolated Next.js development server on localhost:13301, stopped after checks",
+    "original_demo": "unchanged",
+    "new_workspace_database": "not initialized",
+    "remote_push": false
+  }
+}
