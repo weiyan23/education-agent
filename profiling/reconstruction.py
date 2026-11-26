@@ -285,4 +285,3 @@ def rebuild_profile(student_id, course_id, valid_evidences_only, catalog, client
         'revisions': []
     }
     return reconstruct_profile(store, client, synthetic_base, catalog, reason=reason, operator_id=operator_id)
-

@@ -153,4 +153,3 @@ def create_evidence_packet(student_id, problem_id, program, question, *,
 
     validate_learning_evidence(packet, student_id)
     return packet
-
