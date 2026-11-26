@@ -588,6 +588,15 @@ function Workspace(props: WorkspaceProps) {
     return (
       <Admin section={sub || 'overview'} notify={notify} session={session} />
     )
+  if (role === 'student' && sub === 'recommended') {
+    const [, , course, student, decision, binding] = parts
+    if (parts.length !== 6 || !/^\d+$/.test(course) ||
+        student !== String(session.principal.user_id) ||
+        ![decision, binding].every(value => /^[0-9a-f-]{36}$/i.test(value)))
+      return <Notice error>推荐入口无效，请返回课程重新查看建议。</Notice>
+    const source = `/courses/${course}/students/${student}/recommendations/${decision}/exercises/${binding}`
+    return <Binding role={role} id={binding} notify={notify} source={source} />
+  }
   if (sub === 'courses' && id)
     return (
       <Course role={role} id={id} tab={tab} session={session} notify={notify} />
@@ -808,7 +817,7 @@ function Course({
           ['overview', '课程概览'],
           ['resources', '学习资料'],
           ['assignments', '课程作业'],
-          ['state', '学习状态'],
+          ['state', '学习状态与建议'],
         ]
   return (
     <AsyncContent state={state}>
@@ -827,6 +836,7 @@ function Course({
               <Link
                 key={t}
                 href={pathFor(role, `/courses/${id}/${t}`)}
+                aria-current={tab === t ? 'page' : undefined}
                 className={tab === t ? 'active' : ''}
               >
                 {n}
@@ -1817,22 +1827,25 @@ function Binding({
   role,
   id,
   notify,
+  source,
 }: {
   role: string
   id: string
+  source?: string
   notify: (s: string) => void
 }) {
   const router = useRouter(),
-    state = useRemote('/bindings/' + id),
+    state = useRemote(source || '/bindings/' + id),
     submissions = useRemote(
       role === 'teacher' ? `/bindings/${id}/submissions` : null
     ),
     [busy, setBusy] = useState(false),
     [error, setError] = useState('')
-  async function start(d: D) {
+  async function start(displayed: D) {
     setBusy(true)
     setError('')
     try {
+      const d = source ? await api(source) : displayed
       const draft = d.recipient?.attempts?.find((a: D) => a.status === 'draft')
       if (draft) {
         router.push(pathFor('student', `/attempts/${draft.id}`))
@@ -2496,6 +2509,46 @@ function Submission({
   )
 }
 
+function ResearchSuggestion({ decision, profile }: { decision: D; profile: D }) {
+  if (decision.state === 'stale')
+    return <Notice>画像依据已失效，请等待画像和推荐更新。</Notice>
+  const cited = new Set(Object.values(decision.evidence_refs || {}).flat())
+  const evidence = (profile.evidence || []).filter((e: D) => cited.has(e.id) && e.content_access === 'allowed')
+  const prefix = `/courses/${decision.course_id}/students/${decision.student_id}/recommendations/${decision.id}/exercises/`
+  return (
+    <div className="edu-stack">
+      <p className="edu-small edu-muted">
+        正式 B 推荐 · 画像版本 {profile.version} · {label(decision.provenance)}
+      </p>
+      <p>{decision.reason}</p>
+      {decision.concept_ids?.length > 0 && <p>目标知识点：{decision.concept_ids.join('、')}</p>}
+      {evidence.length > 0 ? (
+        <div>
+          <h3>本次推荐引用的依据</h3>
+          <ul>{evidence.map((e: D) => (
+            <li key={e.id}>{e.source_type === 'effective_grade' ? e.summary_text :
+              (e.summary?.text || (e.source_type === 'consented_note' ? '已授权的学习笔记' : '学习观察'))}
+              {' · '}{date(e.observed_at)}</li>
+          ))}</ul>
+        </div>
+      ) : <p className="edu-muted">暂无可展示的引用依据。</p>}
+      {decision.state === 'insufficient_evidence' && <Notice>证据不足，本次未选择练习目标。</Notice>}
+      {decision.state === 'no_content' && <Notice>已选定知识目标，暂时没有可访问的练习。</Notice>}
+      {decision.state === 'ready' && (decision.items || []).filter((item: D) =>
+        item.open_api_path === prefix + item.binding_id
+      ).map((item: D) => (
+        <div key={item.binding_id} className="edu-list-row">
+          <span>{item.title}</span>
+          <Link className={buttonClass('secondary', 'sm')} href={pathFor('student',
+            `/recommended/${decision.course_id}/${decision.student_id}/${decision.id}/${item.binding_id}`)}>
+            打开推荐练习
+          </Link>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function LearningState({
   course,
   studentId,
@@ -2593,43 +2646,63 @@ function LearningState({
           </Panel>
           <Panel padded>
             <h2 className="mb-4">下一步学习建议</h2>
-            {rec.data?.items?.length ? (
-              rec.data.items.map((r: D, i: number) => (
-                <div key={r.id || i} className="edu-list-row">
-                  <div>
-                    <h3>{r.title || r.reason || '课程练习'}</h3>
-                    <p>{r.reason}</p>
-                  </div>
-                  {(r.binding_id || r.target_binding_id || r.resource_id) && (
-                    <Link
-                      className={buttonClass('secondary', 'sm')}
-                      href={pathFor(
-                        role,
-                        r.binding_id || r.target_binding_id
-                          ? `/bindings/${r.binding_id || r.target_binding_id}`
-                          : `/resources/${r.resource_id}`
-                      )}
-                    >
-                      查看内容
-                    </Link>
-                  )}
-                </div>
-              ))
+            {rec.loading || state.loading ? (
+              <Notice>正在读取学习建议…</Notice>
             ) : (
-              <p className="edu-muted">
-                {rec.data?.reason ||
-                  '目前没有可展示的推荐内容。你可以回到课程继续学习。'}
-              </p>
+              <AsyncContent state={rec}>
+                {(decision) => {
+                  if (
+                    String(decision.course_id) !== String(course.course.id) ||
+                    String(d.course_id) !== String(course.course.id) ||
+                    decision.student_id !== studentId ||
+                    d.student_id !== studentId ||
+                    decision.profile_version_id !== d.profile_version_id
+                  )
+                    return (
+                      <Notice>
+                        学习记录已更新，请重新读取建议。{' '}
+                        <Button
+                          onClick={() => {
+                            state.reload()
+                            rec.reload()
+                          }}
+                        >
+                          重新读取
+                        </Button>
+                      </Notice>
+                    )
+                  if (decision.strategy === 'none')
+                    return <Notice>{decision.reason || '暂无学习建议。'}</Notice>
+                  if (decision.strategy === 'research_B')
+                    return <ResearchSuggestion decision={decision} profile={d} />
+                  if (decision.strategy !== 'course_rule')
+                    return <Notice>当前页面尚未接入此推荐来源。</Notice>
+                  return (
+                    <>
+                      <p className="edu-small edu-muted mb-3">
+                        来源：课程规则 · 画像版本 {d.version}
+                      </p>
+                      {decision.items?.length ? decision.items.map((item: D) => (
+                        <div key={item.id} className="edu-list-row">
+                          <div>
+                            <h3>{item.title || '课程练习'}</h3>
+                            <p>{item.reason || decision.reason}</p>
+                          </div>
+                          {item.binding_id && (
+                            <Link className={buttonClass('secondary', 'sm')}
+                              href={pathFor(role, `/bindings/${item.binding_id}`)}>
+                              查看作业
+                            </Link>
+                          )}
+                        </div>
+                      )) : (
+                        <Notice>当前没有可打开的课程建议。</Notice>
+                      )}
+                    </>
+                  )
+                }}
+              </AsyncContent>
             )}
-            <p className="edu-small edu-muted mt-4">
-              方法：
-              {rec.data?.strategy === 'course_rule'
-                ? '课程规则推荐'
-                : rec.data?.strategy === 'research_B'
-                  ? '个性化学习推荐'
-                  : '尚无推荐'}
-              。个性化推荐研究能力尚未接通。
-            </p>
           </Panel>
           <Panel padded>
             <h2 className="mb-3">依据与来源</h2>

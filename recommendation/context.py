@@ -9,7 +9,7 @@ from .history import usage_context
 def _text(value):
     return isinstance(value, str) and bool(value.strip())
 
-
+#检验一组id是否合法
 def _ids(values, name, *, allowed=None, nonempty=False):
     if not isinstance(values, (list, tuple)) or any(not _text(v) for v in values):
         raise ValueError(f'{name} must be a list of nonempty strings')
@@ -19,7 +19,8 @@ def _ids(values, name, *, allowed=None, nonempty=False):
         raise ValueError(f'{name} contains IDs outside the allowed scope')
     return list(values)
 
-
+#校验知识点图谱配置，构建前置依赖有向图
+#返回知识点ID与定义的映射字典
 def _catalog(catalog):
     if not isinstance(catalog, dict) or not _text(catalog.get('version')):
         raise ValueError('Catalog version is required')
@@ -59,6 +60,7 @@ def _catalog(catalog):
             seen_edges.add(key)
     active, done = set(), set()
 
+    #有向图判断是否有环
     def visit(k):
         if k in active:
             raise ValueError('Prerequisite cycle')
@@ -74,7 +76,12 @@ def _catalog(catalog):
         visit(k)
     return concepts
 
-
+#校验，规整单个学生的学习观测记录；核对学生身份，知识点合法性，评价状态，去重观测。
+#把答题证据，模型评价摘要做一致性校验，最后输出结构化分组数据，给诊断和推荐模块使用。
+#evidence：答题原始证据
+#groups：按concept_id分组的观测记录
+#safe_summaries：校验后的总评价
+#source：来源信息
 def _profile(profile, student_id, concepts):
     """Validate all supplied records before exposing any personal context."""
     if profile is None:
@@ -150,7 +157,7 @@ def _profile(profile, student_id, concepts):
     source['observed_concept_ids'] = sorted(groups)
     return evidence, groups, safe_summaries, source
 
-
+#从catalog里筛选出相关的前置依赖关系，关联关系以及对应来源信息
 def _relations(catalog, wanted, allowed):
     prerequisites = []
     for e in catalog.get('prerequisites', []):

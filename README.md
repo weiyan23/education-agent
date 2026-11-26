@@ -238,3 +238,59 @@ python -m unittest discover -s tests
 ## 分享与许可
 
 仓库只包含代码、配置模板、测试和说明；不包含密钥、原始学生数据、模型响应、检查点和运行日志。代码可见不等于已授予任意再分发许可：自有部分暂未选定开源许可证；第三方提示词的 MIT 声明保留于 `profiling/LICENSE`，适用范围见 [复用登记](docs/reference-code.md)。
+
+## 任务三 · 基于动态画像的自适应推荐
+
+### 实现与验收状态
+
+| 步骤 | 当前实现 | 验收状态 |
+| --- | --- | --- |
+| 1. 适配器基线 | 合并仓库内可定位四个研究 CLI | 隔离样例的真实子进程预览通过 |
+| 2. 画像输入 | 校验机构、课程、学生、完整画像、版本和快照哈希 | 合成输入通过；日常 Demo 的完整研究画像仍需画像组提供 |
+| 3. 知识目标映射 | 只返回当前学生可访问且仍可作答的已发布练习 | 本机真实登录映射检查通过 |
+| 4. 结果导入 | 同一事务保存决策、理由、业务证据与资源关联；重复导入返回同一回执，失败回滚。研究内容四通过 `recommendation.imported.B.v1` 取得版本关联 | 本机临时 PostgreSQL 隔离验收通过，使用合成回答和测试身份；真实登录的映射失效检查亦已通过 |
+| 5. 学生端与共享前端 | 展示 B 理由、知识目标、画像版本、来源和当前允许展示的引用摘要；打开与开始作答前复核版本化入口 | React DOM 模拟通过正常点击、撤回、无资源、证据不足和画像失效五种场景；真实浏览器待验收 |
+
+
+
+### 最终文件清单
+| 仓库相对路径 | 职责 |
+| --- | --- |
+| [integration/research_adapter.py](integration/research_adapter.py) | 定位合并仓库的研究 CLI 和解释器 |
+| [integration/recommendation_input.py](integration/recommendation_input.py) | 冻结画像快照，核对版本及 B 报告上下文 |
+| [integration/tests/test_recommendation_input.py](integration/tests/test_recommendation_input.py) | 画像接收、拒绝、哈希与目标查询测试 |
+| [integration/recommendation_artifact.py](integration/recommendation_artifact.py) | 读取可信适配器产物并复核报告哈希 |
+| [upstream/learnhouse/apps/api/src/education/recommendation_mapping.py](upstream/learnhouse/apps/api/src/education/recommendation_mapping.py) | 按知识目标、发布版本、作业和学生权限匹配练习 |
+| [upstream/learnhouse/apps/api/src/education/recommendation_import.py](upstream/learnhouse/apps/api/src/education/recommendation_import.py) | 登记任务、事务导入、历史交接和失效复核 |
+| [upstream/learnhouse/apps/api/src/education/business.py](upstream/learnhouse/apps/api/src/education/business.py) | 按当前画像读取课程规则建议 |
+| [upstream/learnhouse/apps/api/src/education/business_routes.py](upstream/learnhouse/apps/api/src/education/business_routes.py) | 提供映射、导入、列表与版本化访问接口 |
+| [scripts/run_v2_api.py](scripts/run_v2_api.py) | 启动业务 API 并加载研究校验模块 |
+| [scripts/test_v2_demo.py](scripts/test_v2_demo.py) | 在教学业务流程中验证练习映射 |
+| [scripts/check_recommendation_mapping.py](scripts/check_recommendation_mapping.py) | 真实学生会话下验证映射、权限与版本 |
+| [scripts/check_recommendation_invalidation.py](scripts/check_recommendation_invalidation.py) | 验证改分、班级撤权和资源撤回后的旧入口 |
+| [scripts/check_recommendation_import.py](scripts/check_recommendation_import.py) | 在临时 PostgreSQL 中验收正式 B 导入 |
+| [integration/tests/recommendation_import/seed.sql](integration/tests/recommendation_import/seed.sql) | 隔离验收专用合成数据，由脚本加载 |
+| [upstream/learnhouse/apps/web/components/education/EducationApp.tsx](upstream/learnhouse/apps/web/components/education/EducationApp.tsx) | 显示推荐理由、画像版本、获准证据摘要与练习入口 |
+| [upstream/learnhouse/apps/web/components/education/api.ts](upstream/learnhouse/apps/web/components/education/api.ts) | 共享接口客户端、来源标签与失效提示 |
+#### 1. 验证练习映射与失效
+
+在已运行的合成 Demo 上执行。第一条为只读检查；出现 `SKIP` 表示缺少匹配练习。第二条会创建本次测试作业与成绩、临时调整测试学生的班级资格并撤回测试资源。
+
+```bash
+python3 -B scripts/check_recommendation_mapping.py
+python3 -B scripts/check_recommendation_invalidation.py
+```
+
+通过时两条命令均输出 `OK`。在第二条命令打印的 `.runtime/invalidation-*.json` 中核对 `completed: true`、`failed: 0`。旧映射入口在画像更新、班级撤权和资源撤回后应分别返回 409、403、404。
+
+#### 2. 验证正式 B 导入
+
+```bash
+uv run --no-project --isolated --python 3.12 \
+  --with pgserver==0.1.4 --with 'psycopg[binary]==3.3.9' \
+  --with sqlalchemy==2.0.58 --with sqlmodel==0.0.50 --with jsonschema \
+  --with fastapi==0.141.1 --with httpx==0.28.1 \
+  python -B scripts/check_recommendation_import.py
+```
+
+末行应显示“OK 正式 B 导入与失效的隔离验收通过”。脚本创建临时数据库，覆盖报告篡改、事务回滚、重复导入、版本替换、撤权及历史保留。日常 Demo 的学生账号不会因此获得测试推荐。

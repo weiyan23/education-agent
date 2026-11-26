@@ -253,7 +253,18 @@ class Acceptance:
         publication = self.call("publish validated and reviewed rule content", "teacher_a", "POST", f'/resource-versions/{version["id"]}/publication-events', {"action": "publish", "usergroup_id": self.course["class_id"], "expected_event_no": 0, "previous_event_id": None, "validation_id": check["id"], "review_id": review["id"], "policy_version_id": self.course["policy_id"], "reason": "验收演示规则资料发布。"}, key=self.key(), etag=version["etag"])
         criteria = [{"criterion_id": "c" + str(i), "item_id": q["item_id"], "description": "判断题确定性比对", "maximum_score": q["maximum_score"], "knowledge_point_ids": q["knowledge_point_ids"]} for i, q in enumerate(resource["content"]["questions"], 1)]
         binding = self.make_binding(version["id"], publication["id"], new_rubric={"criteria": criteria, "maximum_score": 100}, label="rule")
-        own = self.get("student_a", "/bindings/" + binding["id"])
+        lookup = f'/courses/{self.course["id"]}/recommendation-exercises'
+        matches = self.get("student_a", lookup + "?concept_id=java.condition")
+        match = next(item for item in matches["items"] if item["binding_id"] == binding["id"])
+        self.check("target mapping pins the published exercise version",
+                   match["resource_version_id"] == version["id"] and
+                   match["publication_event_id"] == publication["id"])
+        self.call("second student cannot open mapped exercise", "student_b", "GET",
+                  match["open_api_path"], expected=403)
+        missing = self.get("student_a", lookup + "?concept_id=java.condition&concept_id=absent")
+        self.check("unmapped combination has no exercises",
+                   missing["state"] == "no_content" and not missing["items"])
+        own = self.get("student_a", match["open_api_path"])
         attempt = self.call("student starts rule attempt", "student_a", "POST", f'/bindings/{binding["id"]}/attempts', {"recipient_id": own["recipient"]["id"]}, key=self.key(), etag=own["etag"])
         answers = [{"item_id": q["item_id"], "value": True} for q in resource["content"]["questions"]]
         saved = self.call("save rule answers", "student_a", "PUT", f'/attempts/{attempt["id"]}/draft', {"expected_version": attempt["draft_revision"], "draft": {"answers": answers}}, key=self.key(), etag=attempt["etag"])

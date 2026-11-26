@@ -342,8 +342,12 @@ async def learning_state(db,actor,course_id,student_id):
 
 
 async def recommendations(db,actor,course_id,student_id):
-    await learning_state(db,actor,course_id,student_id)
-    r=await one(db,'SELECT * FROM ea.recommendation_version WHERE org_id=:org AND course_id=:course AND student_id=:student ORDER BY created_at DESC LIMIT 1',org=actor.org_id,course=course_id,student=student_id)
+    state=await learning_state(db,actor,course_id,student_id)
+    r=await one(db,"""SELECT * FROM ea.recommendation_version
+        WHERE org_id=:org AND course_id=:course AND student_id=:student
+        AND profile_version_id=:profile AND method_version='course-deadline-rule-v1'
+        ORDER BY created_at DESC LIMIT 1""",org=actor.org_id,course=course_id,
+        student=student_id,profile=state['profile_version_id'])
     items=[]
     if r:
         for item in await rows(db,'SELECT i.*,b.assignment_id,a.title FROM ea.recommendation_item i LEFT JOIN ea.assignment_binding b ON b.id=i.binding_id LEFT JOIN public.assignment a ON a.id=b.assignment_id WHERE recommendation_version_id=:id ORDER BY rank',id=r['id']):
@@ -353,7 +357,7 @@ async def recommendations(db,actor,course_id,student_id):
                 current=await one(db,'SELECT action FROM ea.publication_event WHERE resource_version_id=:v AND usergroup_id=:g ORDER BY event_no DESC LIMIT 1',v=b['resource_version_id'],g=b['usergroup_id'])
                 if not current or current['action']!='publish':continue
             items.append(item)
-    return clean({'id':r['id'] if r else None,'course_id':course_id,'student_id':student_id,'profile_version_id':r['profile_version_id'] if r else None,'method_version':r['method_version'] if r else None,'strategy':'course_rule' if r else 'none','state':'ready' if items else 'no_content','reason':r['reason'] if r else '完成一次作答并形成有效成绩后生成下一步课程任务建议','items':items,'etag':etag(str(r['id']) if r else '0')})
+    return clean({'id':r['id'] if r else None,'course_id':course_id,'student_id':student_id,'profile_version_id':state['profile_version_id'],'method_version':r['method_version'] if r else None,'strategy':'course_rule' if r else 'none','state':'ready' if items else 'no_content','reason':r['reason'] if r else '完成一次作答并形成有效成绩后生成下一步课程任务建议','items':items,'etag':etag(str(r['id']) if r else '0')})
 
 
 async def project_grade(db,actor,submission,grade):

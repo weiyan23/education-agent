@@ -10,10 +10,12 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import UUID, uuid4
 from functools import wraps
-from fastapi import APIRouter, BackgroundTasks, Depends, Request, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request, HTTPException
 from sqlalchemy.exc import DBAPIError
 from src.core.events.database import get_db_session
 from src.education.security import require_actor, require_course, require_admin, fail
+from src.education import recommendation_import as ri
+from src.education.recommendation_mapping import resolve_exercises
 from src.education import business as b
 from src.db.courses.courses import Course
 from src.db.courses.chapters import Chapter, LockType
@@ -733,7 +735,62 @@ async def state(course_id:int,student_id:int,request:Request,actor=Depends(requi
 @router.get('/courses/{course_id}/students/{student_id}/recommendations')
 @safe
 async def recommend(course_id:int,student_id:int,request:Request,actor=Depends(require_actor),db=Depends(get_db_session)):
+    if actor.role == 'student':
+        decision = await ri.read_decision(db, actor, course_id, student_id)
+        if decision is not None:
+            return decision
     return await b.recommendations(db,actor,course_id,student_id)
+
+
+@router.post('/courses/{course_id}/students/{student_id}/recommendations/jobs')
+@safe
+async def register_recommendation(course_id:int, student_id:int, profile_version_id:UUID,
+                                  request:Request, actor=Depends(require_actor), db=Depends(get_db_session)):
+    return await ri.register(db, actor, course_id, student_id, profile_version_id, request)
+
+
+@router.post('/courses/{course_id}/students/{student_id}/recommendations/jobs/{task_id}/import')
+@safe
+async def import_recommendation(course_id:int, student_id:int, task_id:UUID,
+                                actor=Depends(require_actor), db=Depends(get_db_session)):
+    return await ri.import_result(db, actor, course_id, student_id, task_id)
+
+
+@router.get('/courses/{course_id}/students/{student_id}/recommendations/{version_id}/exercises/{binding_id}')
+@safe
+async def open_decision_exercise(course_id:int, student_id:int, version_id:UUID, binding_id:UUID,
+                                 actor=Depends(require_actor), db=Depends(get_db_session)):
+    view = await ri.read_decision(db, actor, course_id, student_id, version_id)
+    if view['state'] == 'stale':
+        fail('STALE_EVIDENCE', 409)
+    if not any(i['binding_id'] == str(binding_id) for i in view['items']):
+        fail('EXERCISE_UNAVAILABLE', 404)
+    return await b.get_binding(db, actor, binding_id)
+
+
+@router.get('/courses/{course_id}/recommendation-exercises')
+@safe
+async def exercise_matches(course_id: int, concept_id: list[str] = Query(...),
+                           profile_version_id: str | None = None,
+                           actor=Depends(require_actor), db=Depends(get_db_session)):
+    return await resolve_exercises(db, actor, course_id, concept_id, profile_version_id=profile_version_id)
+
+
+@router.get('/courses/{course_id}/recommendation-exercises/{binding_id}')
+@safe
+async def open_exercise_match(course_id: int, binding_id: UUID, resource_version_id: UUID,
+                              publication_event_id: UUID, concept_id: list[str] = Query(...),
+                              profile_version_id: str | None = None,
+                              actor=Depends(require_actor), db=Depends(get_db_session)):
+    matches = await resolve_exercises(db, actor, course_id, concept_id, binding_id=binding_id,
+                                      profile_version_id=profile_version_id)
+    if not matches['items']:
+        fail('EXERCISE_UNAVAILABLE', 404)
+    item = matches['items'][0]
+    if (item['resource_version_id'] != str(resource_version_id)
+            or item['publication_event_id'] != str(publication_event_id)):
+        fail('EXERCISE_VERSION_CHANGED', 409)
+    return await b.get_binding(db, actor, binding_id)
 
 
 @router.get('/evidence/{evidence_id}/content')

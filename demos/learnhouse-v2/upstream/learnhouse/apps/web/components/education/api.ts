@@ -10,6 +10,9 @@ export class ApiError extends Error {
 }
 const pendingKeys = new Map<string, string>()
 const messages: Record<string, string> = {
+  STALE_RECOMMENDATION: '这条推荐已过期，请返回课程查看最新建议。',
+  STALE_EVIDENCE: '推荐依据已失效，请返回课程查看学习状态。',
+  EXERCISE_UNAVAILABLE: '这项练习当前不可访问，请返回课程查看其他建议。',
   SCOPE_DENIED: '你没有此课程或对象的访问权限。',
   VERSION_CONFLICT: '内容已更新，请刷新后重试。',
   IDEMPOTENCY_CONFLICT: '这次操作的内容与之前请求不同，请刷新后重试。',
@@ -147,6 +150,10 @@ export const label = (value: any) =>
       unconfigured: '尚未配置',
       test_fixture: '演示数据',
       demo: '演示数据',
+      simulated: '模拟数据',
+      mixed: '混合来源',
+      real: '真实数据',
+      manual_example: '人工样例',
       source_text: '学习资料',
       exercise: '练习',
       lesson: '学习内容',

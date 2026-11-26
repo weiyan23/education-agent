@@ -16,12 +16,20 @@ from pathlib import Path
 import re
 import sqlite3
 import subprocess
+import sys
 from typing import Callable, Mapping, Optional
 
 
 BASE = Path(__file__).resolve().parents[1]
 REPOSITORY = BASE / "upstream" / "education-agent"
+
+# 兼容研究代码位于仓库根目录的项目结构。
+if not REPOSITORY.is_dir() and BASE.parent.name == "demos":
+    REPOSITORY = BASE.parent.parent
+
 INTERPRETER = Path("/usr/bin/python3.10")
+if not INTERPRETER.is_file():
+    INTERPRETER = Path(sys.executable)
 SCRIPTS = {"generate": "generate_question.py", "profile": "run_profile.py",
            "update": "update_profile.py", "recommend": "run_recommendation.py"}
 LIMITS = {"generate": 8, "profile": 12, "update": 12, "recommend": 2}
