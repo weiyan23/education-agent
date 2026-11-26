@@ -12,6 +12,8 @@ SCRIPTS = {
     'submit': 'submit_answer.py',
     'verify_reference': 'verify_java.py',
     'verify_student': 'verify_submission.py',
+    'reconstruct': 'reconstruct_profile.py',
+    'sequence': 'run_sequence.py',
 }
 FIELDS = {
     'profile': 'records concepts student verification_run limit max_calls',
@@ -21,12 +23,14 @@ FIELDS = {
     'submit': 'generation_run submission',
     'verify_reference': 'generation_run cases approve_sha256',
     'verify_student': 'records submission_run record_id cases approve_sha256',
+    'reconstruct': 'base_profile catalog revoke_record_id reason operator_id max_calls',
+    'sequence': 'sequence_file catalog',
 }
 ARRAYS = {'scope', 'targets', 'goals', 'requirement', 'verification_run'}
 PATHS = {
     'records', 'concepts', 'catalog', 'profile', 'usage_history',
     'recommendation_run', 'base_profile', 'submission_run', 'generation_run',
-    'submission', 'cases', 'verification_run',
+    'submission', 'cases', 'verification_run', 'sequence_file',
 }
 
 
